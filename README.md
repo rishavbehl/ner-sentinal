@@ -5,20 +5,101 @@ Predicts road disruption, estimates delivery delay, recommends safer alternates,
 and — the part nobody else builds — tells you **which single roads the whole
 region hangs on**.
 
-```bash
-./run.sh          # builds the dataset, trains the models, starts the server
+### Windows (PC)
+```cmd
+run.bat               # Command Prompt / Double-click
+# or in PowerShell:
+.\run.ps1
 ```
-First run takes ~2 minutes (data + training). After that it starts instantly.
 
-| | |
-|---|---|
-| Dashboard | http://localhost:8000 |
-| Field reporter (mobile PWA) | http://localhost:8000/field |
-| API index | http://localhost:8000/api |
+### macOS & Linux
+```bash
+./run.sh              # Bash launcher
+```
+*First run takes ~2 minutes (builds dataset and trains models). After that, the server launches in ~1 second.*
 
-**Zero external dependencies at runtime.** No CDN, no map tiles, no internet.
-The map is hand-rendered SVG. This runs on a laptop with the wifi switched off —
-which is the point, both for a venue demo and for the districts this serves.
+| View | Local URL | Notes |
+|---|---|---|
+| **Control Room Dashboard** | http://localhost:8000 | Hand-crafted SVG map, risk layers, what-if simulator |
+| **Field Reporter (Mobile PWA)** | http://localhost:8000/field | Offline-first incident reporting with IndexedDB queue |
+| **Driver Telemetry (Live GPS)** | http://localhost:8000/track | Streams device GPS to live risk surface (requires HTTPS) |
+| **API Index** | http://localhost:8000/api | Complete interactive endpoint documentation & schemas |
+
+**Zero external dependencies at runtime.** No external CDN, no map tiles, no mandatory internet connection.
+The map is hand-rendered SVG. This runs entirely on a laptop with Wi-Fi switched off —
+which is the point, both for a venue demo and for the remote North Eastern districts this serves.
+
+---
+
+## Technology Stack
+
+### 🧠 Machine Learning & Data Science
+- **scikit-learn (`>=1.3`)**:
+  - **Model 1 (Segment Risk Classifier)**: Balanced `RandomForestClassifier` predicting segment status (`safe`, `risky`, `blocked`) with calibrated class probabilities.
+  - **Model 2 (Segment Delay Regressor)**: `RandomForestRegressor` estimating excess transit delay hours on disrupted corridors.
+  - **Model 3 (Cascaded Route Delay Regressor)**: 2-stage ensemble learning non-linear route-level delay, queue cascades, and checkpost dwell times.
+  - **Evaluation & Validation**: Strict `TimeSeriesSplit` temporal evaluation (80% train / 20% test forward in time), Brier score calibration, ROC-AUC (`0.954`), and permutation importance.
+- **pandas (`>=2.0`) & NumPy (`>=1.24`)**: Vectorized feature generation, climatological decay index computations, and antecedent precipitation index (API-7d) soil saturation modeling.
+- **SciPy (`>=1.10`)**: Statistical distribution modelling for synthetic hazard models, gamma-tailed cloudburst simulations, and wet-spell autocorrelation.
+- **Joblib (`>=1.3`)**: Memory-mapped model serialization and high-throughput model persistence.
+
+### 🔍 Explainable AI (XAI)
+- **Saabas Decision-Tree Path Decomposition**: Exact additive feature attribution algorithm developed from first principles (same family as TreeSHAP).
+- **Zero-Residual Mathematical Verification**: On every prediction, the API verifies:
+  $$\text{Baseline} + \sum \text{Feature Contributions} \equiv \text{Model Output} \quad (\text{error} < 10^{-12})$$
+  Returning an `additivity_check: { abs_error: 0.0, exact: true }` guarantee.
+- **Natural Language Reason Synthesis**: Dynamic domain-aware translation of SHAP-like attribution vectors into actionable operational sentences for control-room operators.
+
+### 🗺️ Network Graph Theory & Routing Engine
+- **NetworkX (`>=3.0`)**: Multi-attribute geographic graph representation of the entire North Eastern Region (85 nodes, 98 segments, 43 National Highway corridors, 6,858 km).
+- **Risk-Aware Multi-Criteria Shortest Path Routing**: Customized Dijkstra and Yen's $k$-shortest path algorithm variants with multi-objective trade-off scoring across 4 profiles:
+  - `fastest`: Minimizes expected arrival time.
+  - `balanced`: Commercial haulage optimizing time vs. risk penalty.
+  - `safest`: Exponential risk penalty minimizing landslide exposure.
+  - `emergency`: Strict failure-probability thresholds for critical supplies (blood, vaccines, oxygen).
+- **Single-Point-of-Failure & Chokepoint Analysis**: Graph edge-cut and bridge identification measuring population isolation and district accessibility loss.
+- **District Accessibility Index (DAI 0–100)**: Composite accessibility metric computing reach, reliability, redundancy, terrain burden, and live disruption across all 8 states.
+
+### ⚡ Backend & API Architecture
+- **Python 3.9+ / 3.11**: Cross-platform asynchronous server core.
+- **Starlette (`>=0.37`)**: High-performance ASGI framework powering async route dispatch, middleware, and streaming endpoints.
+- **Uvicorn (`>=0.27`)**: Production ASGI web server running with native `asyncio` event loop.
+- **Pydantic (`>=2.0`)**: Rigorous schema validation, settings management, and API contract enforcement.
+- **Server-Sent Events (SSE)**: Unidirectional real-time event streaming (`/api/fleet/stream`) pushing live vehicle coordinates, alerts, and risk recalculations to dashboards without WebSocket proxy overhead.
+- **WebSockets (`/ws/fleet`)**: Dual real-time bidirectional protocol option for fleet GPS & control room events.
+- **Python-Multipart**: Asynchronous binary and multipart form processing for field incident photo uploads.
+
+### 💾 Database & Storage
+- **SQLite 3**: Embedded relational database configured with Write-Ahead Logging (`PRAGMA journal_mode=WAL;`), foreign key constraints, and multi-threaded connection management.
+- **Normalized Schema (12 Tables & Indexes)**:
+  - Infrastructure: `roads`, `districts`, `corridors`
+  - Dynamic Environment: `weather`, `observations`, `disruptions`
+  - Operations & Incidents: `incidents`, `alerts`, `shipments`
+  - Real-Time Telemetry: `live_vehicles`, `track_points`, `meta`
+
+### 🛰️ Live Telemetry & External Providers
+- **Open-Meteo REST API**: Free, keyless live meteorological telemetry ingestion, hourly forecasts, and rolling antecedent soil moisture calculation with automatic distribution-drift checks.
+- **W3C Geolocation API**: HTML5 `navigator.geolocation` live browser GPS streaming from mobile devices.
+- **AIS-140 / VTS Standard Schema**: Vehicle tracking standard schema compatibility (`/api/track`).
+- **OpenSSL / TLS 1.3**: Automatic self-signed SSL/TLS certificate generation for secure context HTTPS required by mobile GPS.
+
+### 🖥️ Frontend & UI/UX
+- **HTML5 & Vanilla ES6+ JavaScript**: 100% dependency-free, zero build step, zero npm packages, zero external font or CDN downloads.
+- **Custom Hand-Crafted SVG Map Engine**:
+  - Dynamic vector rendering of all 8 NER states with pan/zoom matrix transforms.
+  - 8 distinct visual layers: Risk choropleth, National Highway corridors, real-time fleet, live GPS breadcrumbs, district hubs, weather overlays, terrain contours, and incident flags.
+  - Custom pulsating keyframe status indicators.
+- **CSS3 Design System**: Custom glassmorphism, responsive CSS Grid and Flexbox layouts, tactical dark-mode color scheme tailored for operations control centers.
+- **Progressive Web App (PWA)**:
+  - **Service Workers (`sw.js`)**: Offline caching of application assets.
+  - **IndexedDB**: Client-side resilient offline queue storing field incident reports with UUID deduplication for automatic sync upon network reconnection.
+  - **Web App Manifest (`manifest.json`)**: Mobile installable app experience on iOS and Android.
+
+### 🛠️ Cross-Platform DevOps & Tooling
+- **Windows (PC)**: `run.bat` (Command Prompt) & `run.ps1` (PowerShell) native launchers.
+- **macOS & Linux**: `run.sh` Bash launcher.
+- **Automated Virtual Environment Management**: Automated detection, `.venv` isolation, dependency installation, and health checks.
+- **Deterministic Pipeline**: Seed-locked reproducible data synthesis and model training pipeline (`scripts/pipeline.py`).
 
 ---
 
