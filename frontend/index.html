@@ -1,0 +1,256 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>NER Logistics Sentinel — Route Risk &amp; Accessibility Intelligence</title>
+<link rel="stylesheet" href="/static/styles.css">
+</head>
+<body>
+<div id="app">
+
+  <!-- ================= HEADER ================= -->
+  <header>
+    <div class="brand">
+      <div class="logo">
+        <svg viewBox="0 0 24 24" fill="none" stroke="#04131c" stroke-width="2.2"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M12 2 L20 6 v6 c0 4-3.5 7.5-8 10-4.5-2.5-8-6-8-10V6z"/>
+          <path d="M8.5 12.5 L11 15 L16 9.5"/>
+        </svg>
+      </div>
+      <div>
+        <h1>NER Logistics Sentinel</h1>
+        <p>Route Risk &amp; Accessibility Intelligence</p>
+      </div>
+    </div>
+
+    <div class="kpis" id="kpis"></div>
+
+    <div class="clock">
+      <div class="t" id="clk">--:--</div>
+      <div class="d" id="clkd">loading</div>
+      <div class="live"><span class="dot"></span><span id="livelbl">live</span></div>
+    </div>
+  </header>
+
+  <!-- ================= LEFT ================= -->
+  <aside id="left">
+    <nav class="tabs" id="tabs">
+      <button class="tab on" data-p="route"><span class="ic">◈</span>Route</button>
+      <button class="tab" data-p="risk"><span class="ic">▲</span>Risk</button>
+      <button class="tab" data-p="crit"><span class="ic">✂</span>Choke&nbsp;points</button>
+      <button class="tab" data-p="acc"><span class="ic">◎</span>Access</button>
+      <button class="tab" data-p="fleet"><span class="ic">▣</span>Fleet</button>
+      <button class="tab" data-p="what"><span class="ic">⚡</span>What-if</button>
+      <button class="tab" data-p="model"><span class="ic">⚙</span>Model</button>
+    </nav>
+
+    <div class="panes">
+
+      <!-- ---------- ROUTE ---------- -->
+      <section class="pane on" data-p="route">
+        <div class="fld">
+          <label class="lab" for="orig">Origin</label>
+          <select id="orig"></select>
+        </div>
+        <div class="fld">
+          <label class="lab" for="dest">Destination</label>
+          <select id="dest"></select>
+        </div>
+        <div class="fld">
+          <label class="lab">Routing profile</label>
+          <div class="chips" id="profchips">
+            <button class="chip" data-v="fastest">Fastest</button>
+            <button class="chip on" data-v="balanced">Balanced</button>
+            <button class="chip" data-v="safest">Safest</button>
+            <button class="chip" data-v="emergency">Emergency</button>
+          </div>
+        </div>
+        <div class="fld">
+          <label class="lab" for="cargo">Cargo (viability check)</label>
+          <select id="cargo">
+            <option value="">— none —</option>
+            <option value="blood">Whole blood / platelets (8 h)</option>
+            <option value="oxygen">Medical oxygen (18 h)</option>
+            <option value="vaccine">Vaccines, 2–8 °C (36 h)</option>
+            <option value="perishable">Fresh produce / fish (24 h)</option>
+            <option value="relief">Disaster relief (48 h)</option>
+            <option value="medicine">Pharmaceuticals (72 h)</option>
+            <option value="general">General freight</option>
+          </select>
+        </div>
+        <button class="btn" id="goroute">Plan route</button>
+        <div class="btnrow">
+          <button class="btn ghost sm" id="gocompare">Compare profiles</button>
+          <button class="btn ghost sm" id="godep">Best departure</button>
+        </div>
+        <div id="routesum"></div>
+      </section>
+
+      <!-- ---------- RISK ---------- -->
+      <section class="pane" data-p="risk">
+        <div class="card tight">
+          <h4>Network status</h4>
+          <div id="netstat"></div>
+        </div>
+        <div class="sect">District hotspots</div>
+        <div class="muted" style="margin-bottom:8px">
+          Mean severity weighted by road length. Click a row to zoom.
+        </div>
+        <div id="hotspots"></div>
+        <div class="sect">Alert feed</div>
+        <div class="fld">
+          <label class="lab" for="lang">Alert language</label>
+          <select id="lang"><option value="">Auto (local + English)</option></select>
+        </div>
+        <div id="alertfeed"></div>
+      </section>
+
+      <!-- ---------- CRITICALITY ---------- -->
+      <section class="pane" data-p="crit">
+        <div class="note">
+          <b>Single points of failure.</b> Each segment is deleted from the graph
+          and the network is re-solved from the supply hub. The ranking is what
+          breaks if that one road goes — not how busy it is.
+        </div>
+        <div class="fld">
+          <label class="lab">Rank by</label>
+          <div class="chips" id="critmode">
+            <button class="chip on" data-v="exposure">Live exposure</button>
+            <button class="chip" data-v="structural">Structural</button>
+          </div>
+        </div>
+        <div class="muted" id="critmeta"></div>
+        <div id="crittbl"></div>
+      </section>
+
+      <!-- ---------- ACCESSIBILITY ---------- -->
+      <section class="pane" data-p="acc">
+        <div class="note">
+          <b>District Accessibility Index (0–100).</b> Composite of reach,
+          reliability, route redundancy, terrain burden and live disruption —
+          every sub-score is published, so the number is auditable.
+        </div>
+        <div id="accstate"></div>
+        <div class="sect">Most vulnerable districts</div>
+        <div id="acctbl"></div>
+      </section>
+
+      <!-- ---------- FLEET ---------- -->
+      <section class="pane" data-p="fleet">
+        <div class="card tight">
+          <h4>Live fleet</h4>
+          <div id="fleetstat"></div>
+        </div>
+        <div class="btnrow">
+          <button class="btn ghost sm" id="fleettoggle">Pause stream</button>
+          <button class="btn ghost sm" id="fleetreset">Re-plan fleet</button>
+        </div>
+        <div class="sect">Vehicles</div>
+        <div id="vehlist"></div>
+        <div class="sect">Geofence &amp; cargo alerts</div>
+        <div id="fleetalerts"></div>
+      </section>
+
+      <!-- ---------- WHAT IF ---------- -->
+      <section class="pane" data-p="what">
+        <div class="note">
+          <b>Counterfactual simulator.</b> Inject a storm into the live feature
+          vector and watch the network degrade. Nothing is hard-coded — the
+          models re-score all 98 segments and routes re-plan around the result.
+        </div>
+        <div class="fld">
+          <label class="lab">24 h rainfall
+            <span class="rngval" id="v_rain">off</span></label>
+          <input type="range" id="s_rain" min="0" max="300" step="10" value="0">
+        </div>
+        <div class="fld">
+          <label class="lab">Soil saturation · 7-day API
+            <span class="rngval" id="v_api">off</span></label>
+          <input type="range" id="s_api" min="0" max="450" step="10" value="0">
+        </div>
+        <div class="fld">
+          <label class="lab">Temperature shift
+            <span class="rngval" id="v_temp">0 °C</span></label>
+          <input type="range" id="s_temp" min="-20" max="10" step="1" value="0">
+        </div>
+        <div class="fld">
+          <label class="lab">Apply to states (blank = all)</label>
+          <div class="chips" id="statechips"></div>
+        </div>
+        <button class="btn danger" id="gowhatif">Run scenario</button>
+        <div class="btnrow">
+          <button class="btn ghost sm" id="presetmonsoon">Preset: Meghalaya cloudburst</button>
+          <button class="btn ghost sm" id="resetwhatif">Reset to live</button>
+        </div>
+        <div id="whatifout"></div>
+      </section>
+
+      <!-- ---------- MODEL ---------- -->
+      <section class="pane" data-p="model">
+        <div id="modelout"><div class="center"><span class="spin"></span></div></div>
+      </section>
+
+    </div>
+  </aside>
+
+  <!-- ================= MAP ================= -->
+  <div id="mapwrap">
+    <svg id="map"></svg>
+
+    <div class="mapctl" id="zoomctl">
+      <button id="zin" title="Zoom in">+</button>
+      <button id="zout" title="Zoom out">−</button>
+      <button id="zfit" title="Fit network">⤢</button>
+    </div>
+
+    <div class="mapctl" id="layers">
+      <h5>Layers</h5>
+      <label class="sw">Road risk<input type="checkbox" id="L_seg" checked></label>
+      <label class="sw">District heat<input type="checkbox" id="L_heat"></label>
+      <label class="sw">Choke points<input type="checkbox" id="L_crit"></label>
+      <label class="sw">Access grades<input type="checkbox" id="L_acc"></label>
+      <label class="sw">Fleet<input type="checkbox" id="L_fleet" checked></label>
+      <label class="sw">Incidents<input type="checkbox" id="L_inc"></label>
+      <label class="sw">Labels<input type="checkbox" id="L_lbl" checked></label>
+      <label class="sw">State extents<input type="checkbox" id="L_hull" checked></label>
+    </div>
+
+    <div class="mapctl" id="legend">
+      <h5>Predicted segment risk</h5>
+      <div class="lg"><i style="background:#2dd4a7"></i>Safe · low severity</div>
+      <div class="lg"><i style="background:#a3e635"></i>Minor</div>
+      <div class="lg"><i style="background:#fbbf24"></i>Moderate</div>
+      <div class="lg"><i style="background:#fb923c"></i>High</div>
+      <div class="lg"><i style="background:#ef4444"></i>Blocked (animated)</div>
+    </div>
+
+    <div class="mapctl" id="scalebar">
+      <div class="bar" id="sbar" style="width:70px"></div>
+      <span id="sbtxt">— km</span>
+    </div>
+
+    <div id="banner"></div>
+    <div id="tip"></div>
+  </div>
+
+  <!-- ================= RIGHT ================= -->
+  <aside id="right">
+    <div class="rhead">
+      <h3 id="rtitle">Details</h3>
+      <button class="closex" id="rclose" title="Close">✕</button>
+    </div>
+    <div class="rbody" id="rbody">
+      <div class="center">
+        Click any road segment on the map to see the model's prediction and the
+        exact reasons behind it.<br><br>
+        Or plan a route on the left.
+      </div>
+    </div>
+  </aside>
+
+</div>
+<script src="/static/app.js"></script>
+</body>
+</html>

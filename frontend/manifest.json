@@ -1,0 +1,19 @@
+{
+  "name": "NER Sentinel Field Reporter",
+  "short_name": "Sentinel Field",
+  "description": "Offline-first geo-tagged road incident reporting for the North Eastern Region",
+  "start_url": "/field",
+  "scope": "/",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#0a0f16",
+  "theme_color": "#0a0f16",
+  "icons": [
+    {
+      "src": "data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCAxOTIgMTkyIj48cmVjdCB3aWR0aD0iMTkyIiBoZWlnaHQ9IjE5MiIgcng9IjQwIiBmaWxsPSIjMGExMDE4Ii8+PHBhdGggZD0iTTk2IDMyIDE1MiA2MHY0MmMwIDI4LTI0LjUgNTIuNS01NiA3MC0zMS41LTE3LjUtNTYtNDItNTYtNzBWNjB6IiBmaWxsPSJub25lIiBzdHJva2U9IiMzOGJkZjgiIHN0cm9rZS13aWR0aD0iMTAiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48cGF0aCBkPSJNNzAgOTggODYgMTE0IDEyNiA3NCIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjMmRkNGE3IiBzdHJva2Utd2lkdGg9IjEyIiBzdHJva2UtbGluZWNhcD0icm91bmQiIHN0cm9rZS1saW5lam9pbj0icm91bmQiLz48L3N2Zz4=",
+      "sizes": "192x192",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    }
+  ]
+}

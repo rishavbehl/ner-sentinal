@@ -1,0 +1,308 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="theme-color" content="#0a0f16">
+<title>Sentinel Driver — Live Tracking</title>
+<style>
+:root{--bg:#0a0f16;--panel:#121b27;--panel2:#16212f;--line:#1f2e40;--line2:#2a3d54;
+  --ink:#e8eef6;--ink2:#9fb3c8;--ink3:#6b819a;--accent:#38bdf8;--safe:#2dd4a7;
+  --mod:#fbbf24;--block:#ef4444;
+  --mono:ui-monospace,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);
+  padding-bottom:40px;-webkit-font-smoothing:antialiased}
+header{background:linear-gradient(180deg,#101a26,#0b121b);
+  border-bottom:1px solid var(--line);padding:13px 16px;position:sticky;top:0;z-index:10}
+header h1{margin:0;font-size:16px;display:flex;align-items:center;gap:9px}
+header .lg{width:28px;height:28px;border-radius:8px;flex:0 0 auto;
+  background:linear-gradient(135deg,#0ea5e9,#2dd4a7)}
+header p{margin:3px 0 0;font-size:11px;color:var(--ink3);
+  text-transform:uppercase;letter-spacing:.5px}
+main{padding:16px;max-width:620px;margin:0 auto}
+label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+  color:var(--ink3);margin:0 0 5px;font-weight:700}
+.f{margin-bottom:14px}
+select,input{width:100%;background:var(--panel);border:1px solid var(--line2);
+  border-radius:10px;padding:12px;font:15px var(--sans);color:var(--ink);outline:none}
+select:focus,input:focus{border-color:var(--accent)}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.btn{width:100%;background:linear-gradient(135deg,#0ea5e9,#0284c7);border:none;
+  border-radius:11px;padding:16px;font:700 16px var(--sans);color:#fff;cursor:pointer;
+  box-shadow:0 4px 16px rgba(14,165,233,.3)}
+.btn.stop{background:linear-gradient(135deg,#dc2626,#b91c1c);
+  box-shadow:0 4px 16px rgba(220,38,38,.3)}
+.btn.ghost{background:var(--panel);border:1px solid var(--line2);color:var(--ink2);
+  box-shadow:none;font-size:14px;padding:12px;font-weight:600}
+.btn:disabled{opacity:.5}
+
+.status{border-radius:12px;padding:16px;margin-bottom:14px;
+  border:1px solid var(--line2);background:var(--panel)}
+.status.on{border-color:rgba(45,212,167,.4);
+  background:linear-gradient(160deg,rgba(45,212,167,.09),var(--panel))}
+.status.risk{border-color:rgba(251,191,36,.45);
+  background:linear-gradient(160deg,rgba(251,191,36,.1),var(--panel))}
+.status.blocked{border-color:rgba(239,68,68,.5);
+  background:linear-gradient(160deg,rgba(239,68,68,.13),var(--panel))}
+.big{font:700 30px/1.15 var(--sans);letter-spacing:-.5px;margin-bottom:3px}
+.sub{font-size:12.5px;color:var(--ink2);line-height:1.5}
+.kv{display:flex;justify-content:space-between;gap:10px;padding:5px 0;
+  font-size:13px;border-top:1px solid var(--line);margin-top:3px}
+.kv:first-of-type{border-top:none}
+.kv span:first-child{color:var(--ink3)}
+.kv span:last-child{font-family:var(--mono);font-weight:600}
+.pill{display:inline-block;padding:3px 10px;border-radius:20px;font:700 11px var(--sans);
+  text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px}
+.p-safe{background:rgba(45,212,167,.17);color:var(--safe)}
+.p-risky{background:rgba(251,191,36,.17);color:var(--mod)}
+.p-blocked{background:rgba(239,68,68,.19);color:var(--block)}
+.p-off{background:rgba(107,129,154,.2);color:var(--ink3)}
+.note{background:rgba(56,189,248,.07);border:1px solid rgba(56,189,248,.22);
+  border-radius:10px;padding:12px 13px;font-size:12.5px;color:#b9d7ef;line-height:1.55;
+  margin-bottom:14px}
+.note.warn{background:rgba(245,158,11,.09);border-color:rgba(245,158,11,.3);
+  color:#f3d9a4}
+.note.crit{background:rgba(239,68,68,.1);border-color:rgba(239,68,68,.32);
+  color:#f6c2c2}
+.note b{color:#fff}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink3);
+  margin:24px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.al{background:var(--panel);border-left:3px solid var(--mod);border-radius:9px;
+  padding:11px 12px;margin-bottom:8px;font-size:13px;line-height:1.5}
+.al.crit{border-left-color:var(--block);
+  background:linear-gradient(90deg,rgba(239,68,68,.09),var(--panel))}
+.al .t{font:11px var(--mono);color:var(--ink3);margin-top:4px}
+.dotpulse{width:9px;height:9px;border-radius:50%;background:var(--safe);
+  display:inline-block;margin-right:6px;animation:pz 1.6s infinite}
+@keyframes pz{0%,100%{opacity:1}50%{opacity:.35}}
+footer{text-align:center;font-size:11px;color:var(--ink3);padding:20px 16px}
+code{background:#0c1520;padding:2px 6px;border-radius:5px;font:12px var(--mono);
+  color:var(--accent)}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="lg"></span>Sentinel Driver</h1>
+  <p>Live GPS · real-time road risk</p>
+</header>
+
+<main>
+  <div id="secwarn"></div>
+
+  <div class="status" id="status">
+    <span class="pill p-off" id="pill">not tracking</span>
+    <div class="big" id="headline">Ready</div>
+    <div class="sub" id="advice">Enter your vehicle details and start tracking.
+      Your position is matched to the nearest highway and scored by the same
+      model the control room is watching.</div>
+    <div id="detail"></div>
+  </div>
+
+  <div class="f">
+    <label for="vid">Vehicle / device ID</label>
+    <input id="vid" type="text" placeholder="e.g. AS-01-BC-7788" autocomplete="off">
+  </div>
+  <div class="f">
+    <label for="cargo">Cargo</label>
+    <select id="cargo">
+      <option value="general">General freight</option>
+      <option value="blood">Whole blood / platelets</option>
+      <option value="oxygen">Medical oxygen</option>
+      <option value="vaccine">Vaccines (2–8 °C)</option>
+      <option value="medicine">Pharmaceuticals</option>
+      <option value="perishable">Fresh produce / fish</option>
+      <option value="relief">Disaster relief</option>
+    </select>
+  </div>
+  <div class="f">
+    <label for="driver">Driver / unit</label>
+    <input id="driver" type="text" placeholder="optional" autocomplete="off">
+  </div>
+
+  <button class="btn" id="go">Start tracking</button>
+  <div style="height:9px"></div>
+  <button class="btn ghost" id="once">Send one position now</button>
+
+  <h3>Alerts</h3>
+  <div id="alerts"><div class="note">No alerts. You'll be warned the moment you
+    enter a segment the model rates risky or blocked, and when a blocked segment
+    is coming up ahead.</div></div>
+
+  <h3>How this works</h3>
+  <div class="note">Every fix is snapped to the nearest mapped highway segment,
+    then scored by the live risk model — the same prediction the control-room
+    dashboard shows. This endpoint takes plain JSON, so a real AIS-140 / VTS
+    unit pushes into exactly the same path. The phone is just the cheapest
+    possible tracker.</div>
+</main>
+
+<footer>NER Logistics Sentinel · driver module</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+let watchId = null, tracking = false, alerts = [], lastSent = 0;
+
+/* ---------- secure-context check (this trips everyone up) ---------- */
+function checkSecure() {
+  if (window.isSecureContext || location.hostname === 'localhost'
+      || location.hostname === '127.0.0.1') return true;
+  $('#secwarn').innerHTML = `<div class="note crit">
+    <b>GPS is blocked on this page.</b> Browsers only give location to secure
+    pages, and this one was loaded over plain <code>http://</code>.<br><br>
+    Restart the server with <code>./run.sh --https</code> and open
+    <code>https://${location.hostname}:8443/track</code> instead — accept the
+    certificate warning once. On the laptop itself,
+    <code>http://localhost:8000/track</code> also works.</div>`;
+  return false;
+}
+const SECURE = checkSecure();
+
+/* ---------- persist the vehicle id ---------- */
+try {
+  const saved = localStorage.getItem('sentinel_vid');
+  if (saved) $('#vid').value = saved;
+  const sc = localStorage.getItem('sentinel_cargo');
+  if (sc) $('#cargo').value = sc;
+} catch (_) {}
+
+function vid() {
+  let v = $('#vid').value.trim();
+  if (!v) { v = 'PHONE-' + Math.random().toString(36).slice(2, 6).toUpperCase();
+            $('#vid').value = v; }
+  try { localStorage.setItem('sentinel_vid', v);
+        localStorage.setItem('sentinel_cargo', $('#cargo').value); } catch (_) {}
+  return v;
+}
+
+/* ---------- send a fix ---------- */
+async function send(pos) {
+  const c = pos.coords;
+  const body = {
+    vehicle_id: vid(),
+    lat: c.latitude, lon: c.longitude,
+    speed_kmph: c.speed == null ? null : Math.max(0, c.speed * 3.6),
+    heading: c.heading == null ? null : c.heading,
+    accuracy_m: c.accuracy == null ? null : c.accuracy,
+    cargo_type: $('#cargo').value,
+    driver: $('#driver').value || '',
+    label: vid()
+  };
+  try {
+    const r = await fetch('/api/track', {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(body)
+    });
+    const j = await r.json();
+    if (!r.ok) throw new Error(j.error || 'server error');
+    render(j, c);
+  } catch (e) {
+    $('#headline').textContent = 'Send failed';
+    $('#advice').textContent = e.message + ' — will retry on the next fix.';
+  }
+}
+
+function render(j, coords) {
+  const s = j.snapped_to;
+  const box = $('#status'), pill = $('#pill');
+  let cls = 'status on', pcls = 'pill p-safe', label = 'on network';
+
+  if (!j.on_network) { cls = 'status'; pcls = 'pill p-off'; label = 'off network'; }
+  else if (s.risk_status === 'blocked') { cls = 'status blocked'; pcls = 'pill p-blocked'; label = 'blocked'; }
+  else if (s.risk_status === 'risky') { cls = 'status risk'; pcls = 'pill p-risky'; label = 'risky'; }
+  else { label = 'clear'; }
+
+  box.className = cls;
+  pill.className = pcls;
+  pill.textContent = label;
+  $('#headline').textContent = j.on_network ? s.name : 'Off the mapped network';
+  $('#advice').textContent = j.advice;
+
+  let d = '';
+  if (j.on_network) {
+    d += `<div class="kv"><span>Corridor</span><span>${s.corridor}</span></div>`;
+    d += `<div class="kv"><span>Segment risk</span><span>${(s.severity*100).toFixed(0)}%</span></div>`;
+    d += `<div class="kv"><span>Predicted delay</span><span>${s.delay_hours.toFixed(1)} h</span></div>`;
+    d += `<div class="kv"><span>Terrain</span><span>${s.terrain}</span></div>`;
+    d += `<div class="kv"><span>Rain 24 h</span><span>${s.weather.rainfall_24h_mm} mm</span></div>`;
+    d += `<div class="kv"><span>Soil saturation</span><span>${s.weather.api_7d} mm</span></div>`;
+    d += `<div class="kv"><span>Matched within</span><span>${(s.distance_km*1000).toFixed(0)} m</span></div>`;
+  }
+  if (j.look_ahead) {
+    const a = j.look_ahead;
+    d += `<div class="kv"><span>Ahead (${a.km_ahead} km)</span><span style="color:${
+      a.risk_status==='blocked'?'#ef4444':'#fbbf24'}">${a.name} · ${a.risk_status}</span></div>`;
+  }
+  d += `<div class="kv"><span>Accuracy</span><span>±${(coords.accuracy||0).toFixed(0)} m</span></div>`;
+  d += `<div class="kv"><span>Fixes sent</span><span>${j.points_recorded}</span></div>`;
+  $('#detail').innerHTML = d;
+
+  if (j.alerts && j.alerts.length) {
+    alerts = j.alerts.concat(alerts).slice(0, 25);
+    $('#alerts').innerHTML = alerts.map(a => `
+      <div class="al ${a.severity === 'critical' ? 'crit' : ''}">
+        ${a.message}<div class="t">${a.at.slice(11,16)} · ${a.kind.replace(/_/g,' ')}</div>
+      </div>`).join('');
+    if (navigator.vibrate) navigator.vibrate(a_isCritical(j.alerts) ? [220,90,220] : 160);
+  }
+}
+function a_isCritical(as){ return as.some(a => a.severity === 'critical'); }
+
+/* ---------- controls ---------- */
+function start() {
+  if (!SECURE) return;
+  if (!navigator.geolocation) {
+    $('#headline').textContent = 'No geolocation on this device';
+    return;
+  }
+  tracking = true;
+  $('#go').textContent = 'Stop tracking';
+  $('#go').className = 'btn stop';
+  $('#pill').innerHTML = '<span class="dotpulse"></span>tracking';
+  $('#pill').className = 'pill p-safe';
+  $('#headline').textContent = 'Acquiring position…';
+
+  watchId = navigator.geolocation.watchPosition(
+    pos => {
+      // throttle to one upload per 8 s regardless of how chatty the GPS is
+      const now = Date.now();
+      if (now - lastSent < 8000) return;
+      lastSent = now;
+      send(pos);
+    },
+    e => {
+      $('#headline').textContent = 'Location unavailable';
+      $('#advice').textContent = e.message +
+        ' — check that location permission is granted for this site.';
+    },
+    { enableHighAccuracy: true, maximumAge: 5000, timeout: 20000 }
+  );
+}
+
+function stop() {
+  tracking = false;
+  if (watchId !== null) navigator.geolocation.clearWatch(watchId);
+  watchId = null;
+  $('#go').textContent = 'Start tracking';
+  $('#go').className = 'btn';
+  $('#pill').textContent = 'not tracking';
+  $('#pill').className = 'pill p-off';
+  $('#status').className = 'status';
+}
+
+$('#go').onclick = () => tracking ? stop() : start();
+
+$('#once').onclick = () => {
+  if (!SECURE) return;
+  if (!navigator.geolocation) return;
+  $('#headline').textContent = 'Acquiring position…';
+  navigator.geolocation.getCurrentPosition(
+    p => { lastSent = Date.now(); send(p); },
+    e => { $('#headline').textContent = 'Location unavailable';
+           $('#advice').textContent = e.message; },
+    { enableHighAccuracy: true, timeout: 20000 });
+};
+</script>
+</body>
+</html>

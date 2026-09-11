@@ -1,0 +1,338 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+<meta name="theme-color" content="#0a0f16">
+<title>Sentinel Field Reporter</title>
+<link rel="manifest" href="/static/manifest.json">
+<style>
+:root{--bg:#0a0f16;--panel:#121b27;--panel2:#16212f;--line:#1f2e40;--line2:#2a3d54;
+  --ink:#e8eef6;--ink2:#9fb3c8;--ink3:#6b819a;--accent:#38bdf8;--safe:#2dd4a7;
+  --mod:#fbbf24;--block:#ef4444;
+  --mono:ui-monospace,Menlo,Consolas,monospace;
+  --sans:system-ui,-apple-system,'Segoe UI',Roboto,sans-serif}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:15px/1.5 var(--sans);
+  padding-bottom:34px;-webkit-font-smoothing:antialiased}
+header{background:linear-gradient(180deg,#101a26,#0b121b);
+  border-bottom:1px solid var(--line);padding:13px 16px;position:sticky;top:0;z-index:10}
+header h1{margin:0;font-size:16px;display:flex;align-items:center;gap:9px}
+header .lg{width:28px;height:28px;border-radius:8px;flex:0 0 auto;
+  background:linear-gradient(135deg,#0ea5e9,#2dd4a7)}
+header p{margin:3px 0 0;font-size:11px;color:var(--ink3);
+  text-transform:uppercase;letter-spacing:.5px}
+main{padding:16px;max-width:620px;margin:0 auto}
+.net{display:flex;align-items:center;gap:8px;padding:9px 12px;border-radius:9px;
+  font-size:12.5px;margin-bottom:14px;font-weight:600}
+.net.on{background:rgba(45,212,167,.13);color:var(--safe);
+  border:1px solid rgba(45,212,167,.3)}
+.net.off{background:rgba(251,191,36,.13);color:var(--mod);
+  border:1px solid rgba(251,191,36,.32)}
+.net .d{width:8px;height:8px;border-radius:50%;background:currentColor;flex:0 0 auto}
+label{display:block;font-size:11px;text-transform:uppercase;letter-spacing:.6px;
+  color:var(--ink3);margin:0 0 5px;font-weight:700}
+.f{margin-bottom:15px}
+select,input,textarea{width:100%;background:var(--panel);border:1px solid var(--line2);
+  border-radius:10px;padding:12px;font:15px var(--sans);color:var(--ink);outline:none}
+select:focus,input:focus,textarea:focus{border-color:var(--accent);
+  box-shadow:0 0 0 3px rgba(56,189,248,.13)}
+textarea{min-height:76px;resize:vertical}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:9px}
+.seg{display:grid;grid-template-columns:repeat(3,1fr);gap:7px}
+.seg button{background:var(--panel);border:1px solid var(--line2);border-radius:10px;
+  padding:13px 8px;font:600 13px var(--sans);color:var(--ink2);cursor:pointer}
+.seg button.on{background:rgba(56,189,248,.15);border-color:var(--accent);
+  color:var(--accent)}
+.seg button[data-v=low].on{background:rgba(45,212,167,.15);
+  border-color:var(--safe);color:var(--safe)}
+.seg button[data-v=medium].on{background:rgba(251,191,36,.15);
+  border-color:var(--mod);color:var(--mod)}
+.seg button[data-v=high].on{background:rgba(239,68,68,.17);
+  border-color:var(--block);color:var(--block)}
+.btn{width:100%;background:linear-gradient(135deg,#0ea5e9,#0284c7);border:none;
+  border-radius:11px;padding:15px;font:700 16px var(--sans);color:#fff;cursor:pointer;
+  box-shadow:0 4px 16px rgba(14,165,233,.3)}
+.btn:disabled{opacity:.5}
+.btn.ghost{background:var(--panel);border:1px solid var(--line2);color:var(--ink2);
+  box-shadow:none;font-size:14px;padding:12px;font-weight:600}
+.gps{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:11px 13px;font:12.5px var(--mono);color:var(--ink2);margin-bottom:14px}
+.gps b{color:var(--accent)}
+.q{background:var(--panel);border:1px solid var(--line);border-radius:10px;
+  padding:11px 13px;margin-bottom:9px;font-size:13px}
+.q .h{display:flex;justify-content:space-between;gap:9px;margin-bottom:4px}
+.q .t{font-weight:650}
+.q .m{font:11px var(--mono);color:var(--ink3)}
+.tag{padding:2px 8px;border-radius:20px;font:700 10px var(--sans);
+  text-transform:uppercase;letter-spacing:.4px}
+.tag.p{background:rgba(251,191,36,.16);color:var(--mod)}
+.tag.s{background:rgba(45,212,167,.16);color:var(--safe)}
+.tag.e{background:rgba(239,68,68,.17);color:var(--block)}
+h3{font-size:11px;text-transform:uppercase;letter-spacing:.8px;color:var(--ink3);
+  margin:26px 0 10px;padding-bottom:6px;border-bottom:1px solid var(--line)}
+.note{background:rgba(56,189,248,.07);border:1px solid rgba(56,189,248,.22);
+  border-radius:10px;padding:11px 13px;font-size:12.5px;color:#b9d7ef;line-height:1.55}
+.ok{background:rgba(45,212,167,.1);border:1px solid rgba(45,212,167,.3);
+  border-radius:10px;padding:13px;color:var(--safe);font-size:13.5px;
+  margin-bottom:14px;line-height:1.5}
+#photo{display:none}
+.plab{display:block;background:var(--panel);border:1px dashed var(--line2);
+  border-radius:10px;padding:18px;text-align:center;color:var(--ink3);
+  font-size:13px;cursor:pointer}
+.plab.has{border-color:var(--safe);color:var(--safe)}
+#prev{width:100%;border-radius:10px;margin-top:9px;display:none;max-height:220px;
+  object-fit:cover}
+footer{text-align:center;font-size:11px;color:var(--ink3);padding:22px 16px}
+</style>
+</head>
+<body>
+<header>
+  <h1><span class="lg"></span>Sentinel Field Reporter</h1>
+  <p>Geo-tagged road reports · works offline</p>
+</header>
+
+<main>
+  <div class="net off" id="net"><span class="d"></span><span id="nettxt">checking…</span></div>
+  <div id="okmsg"></div>
+
+  <div class="gps" id="gps">Location: <b>not acquired</b></div>
+  <button class="btn ghost" id="getgps" style="margin-bottom:16px">
+    Use my GPS location</button>
+
+  <form id="frm">
+    <div class="f">
+      <label>Issue type</label>
+      <select id="issue">
+        <option value="landslide">Landslide / slope failure</option>
+        <option value="rockfall">Rockfall</option>
+        <option value="flood">Flooding</option>
+        <option value="bridge_submerged">Bridge submerged</option>
+        <option value="washout">Road washout</option>
+        <option value="road_subsidence">Road subsidence / sinking</option>
+        <option value="road_damage">Surface damage / potholes</option>
+        <option value="snow_blockage">Snow or ice blockage</option>
+        <option value="tree_fall">Tree fall</option>
+        <option value="blockade">Blockade / bandh</option>
+        <option value="congestion">Severe congestion</option>
+        <option value="accident">Accident</option>
+        <option value="construction">Construction closure</option>
+      </select>
+    </div>
+
+    <div class="f">
+      <label>Severity</label>
+      <div class="seg" id="sev">
+        <button type="button" data-v="low">Low</button>
+        <button type="button" data-v="medium" class="on">Medium</button>
+        <button type="button" data-v="high">High</button>
+      </div>
+    </div>
+
+    <div class="f">
+      <label>Coordinates</label>
+      <div class="grid">
+        <input id="lat" type="number" step="0.00001" placeholder="latitude" required>
+        <input id="lon" type="number" step="0.00001" placeholder="longitude" required>
+      </div>
+    </div>
+
+    <div class="f">
+      <label>Notes</label>
+      <textarea id="desc" placeholder="e.g. slope slipped across both lanes about 2 km past the bridge, single-lane traffic only"></textarea>
+    </div>
+
+    <div class="f">
+      <label>Photo (optional)</label>
+      <input type="file" id="photo" accept="image/*" capture="environment">
+      <label class="plab" id="plab" for="photo">Tap to attach a photo</label>
+      <img id="prev" alt="preview">
+    </div>
+
+    <div class="f">
+      <label>Reporter ID</label>
+      <input id="rid" type="text" value="PWD-FIELD" placeholder="your unit / ID">
+    </div>
+
+    <button class="btn" id="submit" type="submit">Submit report</button>
+  </form>
+
+  <h3>Pending queue (<span id="qn">0</span>)</h3>
+  <div id="queue"><div class="note">Nothing queued. Reports submitted while
+    offline are stored on this device and sent automatically when a signal
+    returns.</div></div>
+  <button class="btn ghost" id="sync" style="margin-top:10px">Sync now</button>
+
+  <h3>Why offline-first</h3>
+  <div class="note">Large parts of the North East have no usable mobile data
+    exactly where the roads fail. This page is a service-worker PWA: it loads
+    from cache with no network, stores your reports in IndexedDB, and replays
+    them to the control room when connectivity returns. Each report carries a
+    client ID so a retry can never create a duplicate.</div>
+</main>
+
+<footer>NER Logistics Sentinel · field module</footer>
+
+<script>
+const $ = s => document.querySelector(s);
+let SEV = 'medium';
+
+/* ---------- service worker ---------- */
+if ('serviceWorker' in navigator)
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+
+/* ---------- IndexedDB queue ---------- */
+const DB_NAME = 'sentinel-field', STORE = 'queue';
+function idb() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open(DB_NAME, 1);
+    r.onupgradeneeded = () => {
+      const d = r.result;
+      if (!d.objectStoreNames.contains(STORE))
+        d.createObjectStore(STORE, { keyPath: 'client_id' });
+    };
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function qAdd(rec) {
+  const d = await idb();
+  return new Promise((res, rej) => {
+    const t = d.transaction(STORE, 'readwrite');
+    t.objectStore(STORE).put(rec);
+    t.oncomplete = res; t.onerror = () => rej(t.error);
+  });
+}
+async function qAll() {
+  const d = await idb();
+  return new Promise((res, rej) => {
+    const rq = d.transaction(STORE, 'readonly').objectStore(STORE).getAll();
+    rq.onsuccess = () => res(rq.result || []);
+    rq.onerror = () => rej(rq.error);
+  });
+}
+async function qDel(id) {
+  const d = await idb();
+  return new Promise(res => {
+    const t = d.transaction(STORE, 'readwrite');
+    t.objectStore(STORE).delete(id);
+    t.oncomplete = res;
+  });
+}
+
+/* ---------- UI ---------- */
+function netState() {
+  const on = navigator.onLine;
+  $('#net').className = 'net ' + (on ? 'on' : 'off');
+  $('#nettxt').textContent = on ? 'Online — reports send immediately'
+    : 'Offline — reports will be queued on this device';
+}
+window.addEventListener('online', () => { netState(); sync(); });
+window.addEventListener('offline', netState);
+netState();
+
+document.querySelectorAll('#sev button').forEach(b => b.onclick = () => {
+  document.querySelectorAll('#sev button').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); SEV = b.dataset.v;
+});
+
+$('#getgps').onclick = () => {
+  if (!navigator.geolocation) { $('#gps').innerHTML = 'Location: <b>unsupported on this device</b>'; return; }
+  $('#gps').innerHTML = 'Location: <b>acquiring…</b>';
+  navigator.geolocation.getCurrentPosition(p => {
+    $('#lat').value = p.coords.latitude.toFixed(5);
+    $('#lon').value = p.coords.longitude.toFixed(5);
+    $('#gps').innerHTML = `Location: <b>${p.coords.latitude.toFixed(5)}, ${p.coords.longitude.toFixed(5)}</b> ±${Math.round(p.coords.accuracy)} m`;
+  }, e => {
+    $('#gps').innerHTML = `Location: <b>unavailable (${e.message})</b> — enter manually`;
+  }, { enableHighAccuracy: true, timeout: 12000 });
+};
+
+$('#photo').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  $('#plab').textContent = f.name + ' attached';
+  $('#plab').classList.add('has');
+  const u = URL.createObjectURL(f);
+  $('#prev').src = u; $('#prev').style.display = 'block';
+};
+
+function msg(html, cls = 'ok') { $('#okmsg').innerHTML = `<div class="${cls}">${html}</div>`;
+  setTimeout(() => $('#okmsg').innerHTML = '', 7000); }
+
+$('#frm').onsubmit = async ev => {
+  ev.preventDefault();
+  const lat = parseFloat($('#lat').value), lon = parseFloat($('#lon').value);
+  if (isNaN(lat) || isNaN(lon)) { msg('Coordinates are required.', 'ok'); return; }
+
+  const rec = {
+    client_id: 'C' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+    lat, lon, issue_type: $('#issue').value, severity: SEV,
+    description: $('#desc').value || '',
+    reporter_id: $('#rid').value || 'FIELD',
+    source: 'field_app_pwa',
+    reported_at: new Date().toISOString().slice(0, 19),
+    queued_at: Date.now()
+  };
+
+  $('#submit').disabled = true;
+  let sent = false;
+  if (navigator.onLine) {
+    try { sent = await send(rec); } catch (_) { sent = false; }
+  }
+  if (sent) {
+    msg('<b>Report delivered.</b> It is now feeding the risk model for that segment.');
+  } else {
+    await qAdd(rec);
+    msg('<b>Saved on this device.</b> No connection — it will send automatically when a signal returns.');
+  }
+  $('#frm').reset(); SEV = 'medium';
+  document.querySelectorAll('#sev button').forEach(x =>
+    x.classList.toggle('on', x.dataset.v === 'medium'));
+  $('#plab').textContent = 'Tap to attach a photo';
+  $('#plab').classList.remove('has');
+  $('#prev').style.display = 'none';
+  $('#submit').disabled = false;
+  render();
+};
+
+async function send(rec) {
+  const r = await fetch('/api/incidents', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(rec)
+  });
+  return r.ok;
+}
+
+async function sync() {
+  const items = await qAll();
+  if (!items.length) { render(); return; }
+  if (!navigator.onLine) { msg('Still offline — queue kept.', 'ok'); return; }
+  let n = 0;
+  for (const it of items) {
+    try { if (await send(it)) { await qDel(it.client_id); n++; } } catch (_) {}
+  }
+  if (n) msg(`<b>${n} queued report${n > 1 ? 's' : ''} delivered.</b>`);
+  render();
+}
+$('#sync').onclick = sync;
+
+async function render() {
+  const items = (await qAll()).sort((a, b) => b.queued_at - a.queued_at);
+  $('#qn').textContent = items.length;
+  $('#queue').innerHTML = items.length ? items.map(i => `
+    <div class="q"><div class="h">
+      <span class="t">${i.issue_type.replace(/_/g, ' ')}</span>
+      <span class="tag ${i.severity === 'high' ? 'e' : i.severity === 'medium' ? 'p' : 's'}">${i.severity}</span>
+    </div>
+    <div class="m">${i.lat.toFixed(4)}, ${i.lon.toFixed(4)} · queued ${new Date(i.queued_at).toLocaleTimeString()}</div>
+    ${i.description ? `<div style="margin-top:5px;color:#9fb3c8;font-size:12.5px">${i.description.replace(/</g, '&lt;')}</div>` : ''}
+    </div>`).join('')
+    : `<div class="note">Nothing queued. Reports submitted while offline are
+       stored on this device and sent automatically when a signal returns.</div>`;
+}
+render();
+setTimeout(sync, 1500);
+</script>
+</body>
+</html>

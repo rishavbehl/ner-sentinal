@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.venv/
+env/
+venv/
+ENV/
+
+# Data artifacts & SQLite
+data/sentinel.db
+data/sentinel.db-wal
+data/sentinel.db-shm
+data/artifacts/*.joblib
+data/artifacts/*.json
+data/dataset_meta.json
+data/certs/
+data/uploads/*
+!data/uploads/.gitkeep
+
+# macOS & OS metadata
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+__MACOSX/
