@@ -6,7 +6,8 @@
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
 [![Scikit-Learn](https://img.shields.io/badge/scikit--learn-1.3+-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white)](https://scikit-learn.org/)
-[![Starlette](https://img.shields.io/badge/Starlette-0.37+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://www.starlette.io/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Swagger UI](https://img.shields.io/badge/Swagger-UI_Docs-85EA2D?style=for-the-badge&logo=swagger&logoColor=black)](http://localhost:8000/docs)
 [![Uvicorn](https://img.shields.io/badge/Uvicorn-0.27+-499848?style=for-the-badge&logo=gunicorn&logoColor=white)](https://www.uvicorn.org/)
 [![NetworkX](https://img.shields.io/badge/NetworkX-3.0+-blueviolet?style=for-the-badge)](https://networkx.org/)
 [![Pandas](https://img.shields.io/badge/Pandas-2.0+-150458?style=for-the-badge&logo=pandas&logoColor=white)](https://pandas.pydata.org/)
@@ -70,11 +71,12 @@ Across eight states and forty-five million people, vital logistics hang on a vul
 ### ⚡ Backend & Asynchronous API
 | Technology | Version | Purpose & Implementation |
 |---|---|---|
-| **Starlette** | `>=0.37` | Ultra-fast ASGI core powering async request routing, CORS middleware, and streaming responses |
+| **FastAPI** | `>=0.110` | Modern, high-performance async web framework providing interactive Swagger UI (`/docs`), ReDoc (`/redoc`), and OpenAPI 3.1 schema |
 | **Uvicorn** | `>=0.27` | High-throughput asynchronous ASGI web server running native event loops |
-| **Pydantic** | `>=2.0` | Strict data validation, schema enforcement, and type-safe contracts |
+| **Pydantic** | `>=2.0` | Strict data validation, schema enforcement, and type-safe parameter/body contracts |
+| **Starlette** | `>=0.37` | Underlying ASGI core powering CORS middleware, request routing, and streaming responses |
 | **Server-Sent Events (SSE)** | Native | Real-time, unidirectional telemetry streaming (`/api/fleet/stream`) with automatic browser reconnection |
-| **WebSockets** | `/ws/fleet` | Optional bidirectional transport protocol for real-time fleet telematics |
+| **WebSockets** | `/ws/fleet` | Bidirectional transport protocol for real-time fleet telematics |
 | **Python-Multipart** | `>=0.0.6` | Asynchronous multipart form parsing for field incident image uploads |
 
 ### 💾 Database & Storage
@@ -242,9 +244,11 @@ chmod +x run.sh
 | Portal | Local URL | Description |
 |---|---|---|
 | **Control Room Dashboard** | `http://localhost:8000` | Full operational map, what-if simulator, fleet feed |
+| **Interactive Swagger UI** | `http://localhost:8000/docs` | Interactive OpenAPI documentation to test all endpoints |
+| **Alternative ReDoc** | `http://localhost:8000/redoc` | High-readability developer reference documentation |
 | **Field Incident Reporter** | `http://localhost:8000/field` | Mobile PWA for field personnel (works offline) |
 | **Driver Telemetry (GPS)** | `http://localhost:8000/track` | Mobile GPS streamer (requires `--https` on phones) |
-| **API Documentation** | `http://localhost:8000/api` | Live interactive schema and endpoint catalogue |
+| **API Manifest Index** | `http://localhost:8000/api` | Live machine-readable index and parameter schema |
 
 ---
 
@@ -260,7 +264,7 @@ chmod +x run.sh
 
 ## 📡 API Reference
 
-The server exposes an asynchronous REST & SSE API at `/api`:
+The server exposes an asynchronous REST, SSE, and WebSocket API powered by FastAPI. All endpoints are fully documented and interactively testable in **Swagger UI at [`/docs`](http://localhost:8000/docs)** and **ReDoc at [`/redoc`](http://localhost:8000/redoc)**:
 
 | Method | Endpoint | Description |
 |---|---|---|

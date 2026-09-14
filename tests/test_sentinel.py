@@ -12,12 +12,12 @@ Tests cover:
 8. Departure-window optimizer & counterfactual what-if scenarios
 9. Multilingual alert generation and review-pending flags
 10. Live GPS snapping, geofencing, and lookahead hazard warnings
-11. Starlette API endpoints, error handling, and frontend serving
+11. FastAPI endpoints, error handling, Swagger documentation, and frontend serving
 """
 import os
 import numpy as np
 import pytest
-from starlette.testclient import TestClient
+from fastapi.testclient import TestClient
 
 from backend import alerts, config, db, explain, features, geography, inference, routing
 from backend.app import app
@@ -319,7 +319,7 @@ class TestGPSAndTelemetry:
 
 
 # ==============================================================================
-# 11. STARLETTE API INTEGRATION TESTS (TestClient)
+# 11. FASTAPI & SWAGGER API INTEGRATION TESTS (TestClient)
 # ==============================================================================
 class TestAPIEndpoints:
     @classmethod
@@ -329,6 +329,23 @@ class TestAPIEndpoints:
     @classmethod
     def teardown_class(cls):
         cls.client.close()
+
+    def test_swagger_and_openapi(self):
+        r_docs = self.client.get("/docs")
+        assert r_docs.status_code == 200
+        assert "swagger-ui" in r_docs.text.lower() or "html" in r_docs.headers.get("content-type", "")
+
+        r_redoc = self.client.get("/redoc")
+        assert r_redoc.status_code == 200
+
+        r_spec = self.client.get("/openapi.json")
+        assert r_spec.status_code == 200
+        spec = r_spec.json()
+        assert "paths" in spec
+        assert "/api/route" in spec["paths"]
+        assert "/api/network" in spec["paths"]
+        assert "/api/incidents" in spec["paths"]
+        assert len(spec["paths"]) >= 25
 
     def test_api_index(self):
         r = self.client.get("/api")
