@@ -61,6 +61,7 @@ if not defined IP set "IP=127.0.0.1"
 if "%USE_HTTPS%"=="1" (
     if not exist "data\certs" mkdir data\certs
     echo   Dashboard      https://localhost:%HTTPS_PORT%
+    echo   API Docs (UI)  https://localhost:%HTTPS_PORT%/docs        ^<- interactive Swagger
     echo   Driver (GPS)   https://%IP%:%HTTPS_PORT%/track     ^<- open on the phone
     echo   Field reporter https://%IP%:%HTTPS_PORT%/field
     echo.
@@ -69,6 +70,7 @@ if "%USE_HTTPS%"=="1" (
     "%PY%" -m uvicorn backend.app:app --host 0.0.0.0 --port %HTTPS_PORT% --ssl-keyfile data\certs\key.pem --ssl-certfile data\certs\cert.pem
 ) else (
     echo   Dashboard      http://localhost:%PORT%
+    echo   API Docs (UI)  http://localhost:%PORT%/docs        ^<- interactive Swagger
     echo   Field reporter http://localhost:%PORT%/field
     echo   Driver (GPS)   http://localhost:%PORT%/track
     echo   API index      http://localhost:%PORT%/api

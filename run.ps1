@@ -62,6 +62,7 @@ if (-not $localIP) { $localIP = "127.0.0.1" }
 if ($Https) {
     if (-not (Test-Path "data\certs")) { New-Item -ItemType Directory -Path "data\certs" | Out-Null }
     Write-Host "  Dashboard      https://localhost:$HttpsPort" -ForegroundColor Green
+    Write-Host "  API Docs (UI)  https://localhost:$HttpsPort/docs        <- interactive Swagger" -ForegroundColor Green
     Write-Host "  Driver (GPS)   https://$($localIP):$HttpsPort/track     <- open on the phone" -ForegroundColor Green
     Write-Host "  Field reporter https://$($localIP):$HttpsPort/field" -ForegroundColor Green
     Write-Host ""
@@ -70,6 +71,7 @@ if ($Https) {
     & $VenvPy -m uvicorn backend.app:app --host 0.0.0.0 --port $HttpsPort --ssl-keyfile data\certs\key.pem --ssl-certfile data\certs\cert.pem
 } else {
     Write-Host "  Dashboard      http://localhost:$Port" -ForegroundColor Green
+    Write-Host "  API Docs (UI)  http://localhost:$Port/docs        <- interactive Swagger" -ForegroundColor Green
     Write-Host "  Field reporter http://localhost:$Port/field" -ForegroundColor Green
     Write-Host "  Driver (GPS)   http://localhost:$Port/track" -ForegroundColor Green
     Write-Host "  API index      http://localhost:$Port/api" -ForegroundColor Green

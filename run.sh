@@ -36,7 +36,7 @@ fi
 MISSING=$("$PY" - <<'PYEOF'
 mods = {"sklearn": "scikit-learn", "pandas": "pandas", "numpy": "numpy",
         "networkx": "networkx", "joblib": "joblib",
-        "starlette": "starlette", "uvicorn": "uvicorn"}
+        "fastapi": "fastapi", "starlette": "starlette", "uvicorn": "uvicorn"}
 missing = []
 for m, pkg in mods.items():
     try:
@@ -87,6 +87,7 @@ if [ "$USE_HTTPS" = "1" ]; then
     echo
   fi
   echo "  Dashboard      https://localhost:$HTTPS_PORT"
+  echo "  API Docs (UI)  https://localhost:$HTTPS_PORT/docs        <- interactive Swagger"
   echo "  Driver (GPS)   https://$IP:$HTTPS_PORT/track     <- open on the phone"
   echo "  Field reporter https://$IP:$HTTPS_PORT/field"
   echo
@@ -97,6 +98,7 @@ if [ "$USE_HTTPS" = "1" ]; then
        --ssl-keyfile data/certs/key.pem --ssl-certfile data/certs/cert.pem
 else
   echo "  Dashboard      http://localhost:$PORT"
+  echo "  API Docs (UI)  http://localhost:$PORT/docs        <- interactive Swagger"
   echo "  Field reporter http://localhost:$PORT/field"
   echo "  Driver (GPS)   http://localhost:$PORT/track"
   echo "  API index      http://localhost:$PORT/api"

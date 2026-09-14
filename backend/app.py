@@ -1,10 +1,9 @@
 """
 NER Logistics Sentinel — API server.
 
-Built on Starlette (the ASGI core FastAPI itself is built on) + uvicorn. Full
-async, native WebSockets, zero additional dependencies. Every endpoint is
-documented at GET /api and the whole thing is served alongside the dashboard so
-`./run.sh` is the only command needed.
+Built on FastAPI + uvicorn. Full async, native WebSockets, interactive Swagger
+UI at /docs, ReDoc at /redoc, and OpenAPI 3.1 specification at /openapi.json.
+Every endpoint is fully documented and served alongside the frontend dashboard.
 """
 from __future__ import annotations
 
@@ -17,15 +16,12 @@ import uuid
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from starlette.applications import Starlette
-from starlette.middleware import Middleware
-from starlette.middleware.cors import CORSMiddleware
-from starlette.requests import Request
-from starlette.responses import (FileResponse, JSONResponse, Response,
-                                 StreamingResponse)
-from starlette.routing import Route, WebSocketRoute
-from starlette.staticfiles import StaticFiles
-from starlette.websockets import WebSocket, WebSocketDisconnect
+from fastapi import (Body, FastAPI, HTTPException, Path, Query, Request,
+                     Response, WebSocket, WebSocketDisconnect, status)
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 
 from . import alerts as alerts_mod
 from . import config, db, inference, routing
@@ -41,15 +37,49 @@ FRONTEND = os.path.join(BASE_DIR, "frontend")
 
 
 # --------------------------------------------------------------------------
-def ok(data: Any, status: int = 200) -> JSONResponse:
-    return JSONResponse(data, status_code=status)
+# PYDANTIC SCHEMAS FOR SWAGGER UI DOCUMENTATION
+# --------------------------------------------------------------------------
+class IncidentReportSchema(BaseModel):
+    road_id: Optional[str] = Field(None, description="Associated road segment ID (e.g. AS_NH27_001). If omitted, automatically snapped to nearest segment.")
+    lat: float = Field(..., description="Latitude coordinate of incident")
+    lon: float = Field(..., description="Longitude coordinate of incident")
+    issue_type: str = Field("road_damage", description="Type of incident: landslide | flood | road_damage | blockage | weather_hazard | accident")
+    severity: str = Field("medium", description="Severity level: low | medium | high")
+    description: Optional[str] = Field(None, description="Field notes or incident description")
+    reporter_id: Optional[str] = Field("FIELD-APP", description="Identifier of reporter or vehicle unit")
+    client_id: Optional[str] = Field(None, description="Client UUID for idempotent offline replay deduplication")
+    reported_at: Optional[str] = Field(None, description="ISO timestamp of observation (defaults to current system time)")
+    source: Optional[str] = Field("field_app_pwa", description="Origin source tag")
 
 
-def err(msg: str, status: int = 400, detail: Optional[str] = None) -> JSONResponse:
+class GPSTrackingPayload(BaseModel):
+    vehicle_id: str = Field(..., description="Unique vehicle identifier (e.g. TRUCK-01, AIS140-987654)")
+    lat: float = Field(..., description="Current latitude coordinate")
+    lon: float = Field(..., description="Current longitude coordinate")
+    speed_kmh: Optional[float] = Field(0.0, description="Current vehicle speed in km/h")
+    heading: Optional[float] = Field(0.0, description="Vehicle heading direction in degrees (0-360)")
+    altitude_m: Optional[float] = Field(None, description="Altitude in meters")
+    accuracy_m: Optional[float] = Field(None, description="GPS fix horizontal accuracy in meters")
+    timestamp: Optional[str] = Field(None, description="ISO timestamp of fix")
+    battery_pct: Optional[float] = Field(None, description="Device battery percentage (0-100)")
+
+
+class ForgetVehiclePayload(BaseModel):
+    vehicle_id: str = Field(..., description="Vehicle ID to drop from active tracking")
+
+
+# --------------------------------------------------------------------------
+# HELPERS
+# --------------------------------------------------------------------------
+def ok(data: Any, status_code: int = 200) -> JSONResponse:
+    return JSONResponse(data, status_code=status_code)
+
+
+def err(msg: str, status_code: int = 400, detail: Optional[str] = None) -> JSONResponse:
     body = {"error": msg}
     if detail:
         body["detail"] = detail
-    return JSONResponse(body, status_code=status)
+    return JSONResponse(body, status_code=status_code)
 
 
 def qp(req: Request, key: str, default=None):
@@ -88,16 +118,136 @@ def overrides_from_query(req: Request) -> Optional[dict]:
     return ov or None
 
 
+def _point_seg_km(plat, plon, alat, alon, blat, blon) -> float:
+    """Great-circle-ish distance from a point to a segment (planar approx)."""
+    from .geography import haversine_km
+    ax, ay = alon, alat
+    bx, by = blon, blat
+    px, py = plon, plat
+    dx, dy = bx - ax, by - ay
+    if dx == 0 and dy == 0:
+        return haversine_km(plat, plon, alat, alon)
+    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
+    t = max(0.0, min(1.0, t))
+    cx, cy = ax + t * dx, ay + t * dy
+    return haversine_km(plat, plon, cy, cx)
+
+
 # ==========================================================================
-# META
+# OPENAPI TAGS & FASTAPI INSTANCE
 # ==========================================================================
+tags_metadata = [
+    {
+        "name": "Meta & Health",
+        "description": "API discovery manifest, system health check, ML model fingerprints, training metrics, and language manifests.",
+    },
+    {
+        "name": "Network & Geography",
+        "description": "Scored road networks, national corridors, routable hub nodes, district weather saturation, and segment risk attribution.",
+    },
+    {
+        "name": "Routing & Resilience",
+        "description": "Multi-criteria route planning (fastest, balanced, safest, emergency), profile comparisons, departure optimization, choke-point criticality, district accessibility, and climate what-if scenario simulations.",
+    },
+    {
+        "name": "Alerts & Incidents",
+        "description": "Multilingual control-room alerting and crowd-sourced / driver field incident reporting.",
+    },
+    {
+        "name": "Live Weather",
+        "description": "Open-Meteo weather station ingestion, cache control, and live rainfall provenance.",
+    },
+    {
+        "name": "Tracking & Fleet",
+        "description": "Real GPS tracker ingestion (AIS-140/phones), simulated fleet telemetry, SSE/WebSocket streams, and fleet control.",
+    },
+]
+
+
+# ==========================================================================
+# STARTUP LIFESPAN — live weather refresh loop
+# ==========================================================================
+async def _weather_loop() -> None:
+    """Refresh live weather on boot, then on an interval. Failures are logged
+    and swallowed: a dead network must never take the dashboard down."""
+    first = True
+    while True:
+        try:
+            res = await asyncio.to_thread(wx_live.refresh, True)
+            if res.get("ok"):
+                inference.invalidate_cache()
+            elif first:
+                print("[weather] falling back to the built-in simulated "
+                      "climatology — the app is fully functional, just not live.")
+        except Exception as e:
+            print("[weather] refresh loop error:", e)
+        first = False
+        await asyncio.sleep(config.WEATHER_INTERVAL_MIN * 60)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    mode = "LIVE (Open-Meteo)" if config.LIVE_WEATHER else "SIMULATED"
+    print(f"[sentinel] weather source: {mode}")
+    print(f"[sentinel] GPS tracking:   "
+          f"{'enabled' if config.LIVE_GPS else 'disabled'}"
+          f"  -> open /track on a phone to stream real positions")
+    print(f"[sentinel] Swagger UI:     http://localhost:8000/docs")
+    print(f"[sentinel] ReDoc:          http://localhost:8000/redoc")
+    task = asyncio.create_task(_weather_loop()) if config.LIVE_WEATHER else None
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+
+
+app = FastAPI(
+    title="NER Logistics Sentinel API",
+    description="""
+# NER Logistics Sentinel API 🛰️🚛
+
+**AI route-risk and accessibility intelligence for the North Eastern Region of India.**
+
+- **Interactive Swagger UI**: Explore and execute all endpoints below.
+- **Alternative ReDoc**: Available at [`/redoc`](/redoc).
+- **OpenAPI Schema**: Available at [`/openapi.json`](/openapi.json).
+- **Web Dashboard**: Available at [`/`](/).
+    """,
+    version="1.0.0",
+    openapi_tags=tags_metadata,
+    docs_url="/docs",
+    redoc_url="/redoc",
+    openapi_url="/openapi.json",
+    lifespan=lifespan,
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
+# ==========================================================================
+# META & HEALTH
+# ==========================================================================
+@app.get("/api", tags=["Meta & Health"], summary="API Capability Manifest & Index")
 async def api_index(req: Request) -> JSONResponse:
+    """Return an overview of all Sentinel endpoints, routing profiles, and what-if parameters."""
     return ok({
         "name": "NER Logistics Sentinel",
-        "tagline": "AI route-risk and accessibility intelligence for the "
-                   "North Eastern Region",
+        "tagline": "AI route-risk and accessibility intelligence for the North Eastern Region",
         "now": inference.now_ts(),
+        "docs": "/docs",
+        "redoc": "/redoc",
+        "openapi": "/openapi.json",
         "endpoints": {
+            "GET  /docs": "Interactive Swagger UI documentation",
+            "GET  /redoc": "Alternative ReDoc API documentation",
+            "GET  /openapi.json": "Full OpenAPI 3.1 schema",
             "GET  /api/health": "liveness + model fingerprint",
             "GET  /api/metrics": "full training + evaluation report",
             "GET  /api/network": "all road segments scored at a timestamp",
@@ -136,7 +286,9 @@ async def api_index(req: Request) -> JSONResponse:
     })
 
 
+@app.get("/api/health", tags=["Meta & Health"], summary="Health Check & Model Fingerprint")
 async def health(req: Request) -> JSONResponse:
+    """Check API server liveness, loaded machine learning models, and accuracy benchmarks."""
     try:
         m = inference.metrics()
         st = inference.network_state()
@@ -157,11 +309,15 @@ async def health(req: Request) -> JSONResponse:
         return err("not ready — run scripts/pipeline.py first", 503, str(e))
 
 
+@app.get("/api/metrics", tags=["Meta & Health"], summary="Model Training & Evaluation Metrics")
 async def metrics(req: Request) -> JSONResponse:
+    """Return detailed cross-validation and temporal hold-out metrics for all Sentinel models."""
     return ok(inference.metrics())
 
 
+@app.get("/api/languages", tags=["Meta & Health"], summary="Supported Alert Languages")
 async def languages(req: Request) -> JSONResponse:
+    """Return dictionary of supported Northeast Indian regional languages and state defaults."""
     return ok({
         "languages": alerts_mod.LANGUAGES,
         "state_defaults": {k: {"state": STATES[k], "language": v}
@@ -173,29 +329,55 @@ async def languages(req: Request) -> JSONResponse:
 
 
 # ==========================================================================
-# NETWORK
+# NETWORK & GEOGRAPHY
 # ==========================================================================
-async def network(req: Request) -> JSONResponse:
-    ts = qp(req, "ts")
+@app.get("/api/network", tags=["Network & Geography"], summary="Scored Network Road Segments")
+async def network(
+    req: Request,
+    ts: Optional[str] = Query(None, description="ISO timestamp (defaults to current time)"),
+    state: Optional[str] = Query(None, description="Comma-separated state filter, e.g. AS,ML"),
+    slim: Optional[str] = Query(None, description="If true, omits heavy feature vector dicts"),
+    rain_multiplier: Optional[float] = Query(None, description="Scenario rainfall multiplier (e.g. 1.5)"),
+    rain_24h_set: Optional[float] = Query(None, description="Scenario 24h rainfall override in mm"),
+    api_multiplier: Optional[float] = Query(None, description="Scenario 7-day API multiplier"),
+    api_set: Optional[float] = Query(None, description="Scenario 7-day API override"),
+    temperature_delta: Optional[float] = Query(None, description="Scenario temperature delta in °C"),
+    condition_set: Optional[str] = Query(None, description="Scenario weather condition override"),
+    states: Optional[str] = Query(None, description="Scenario states target filter"),
+) -> JSONResponse:
+    """Retrieve all road segments scored by the ML model with real-time risk, delay, and severity."""
     ov = overrides_from_query(req)
     st = inference.network_state(ts, ov)
-    state_filter = qp(req, "state")
     segs = list(st["segments"].values())
-    if state_filter:
-        want = {s.strip().upper() for s in state_filter.split(",")}
+    if state:
+        want = {s.strip().upper() for s in state.split(",")}
         segs = [s for s in segs if s["state"] in want]
-    slim = qp(req, "slim", "0") in ("1", "true", "yes")
-    if slim:
+    is_slim = (slim or "").lower() in ("1", "true", "yes")
+    if is_slim:
         segs = [{k: v for k, v in s.items() if k != "features"} for s in segs]
     return ok({"ts": st["ts"], "summary": st["summary"], "segments": segs})
 
 
-async def network_summary(req: Request) -> JSONResponse:
+@app.get("/api/network/summary", tags=["Network & Geography"], summary="Network Summary Counters")
+async def network_summary(
+    req: Request,
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Headline network metrics: blocked segments, risky segments, total km blocked, mean severity."""
     st = inference.network_state(qp(req, "ts"), overrides_from_query(req))
     return ok(st["summary"])
 
 
+@app.get("/api/nodes", tags=["Network & Geography"], summary="Routable Hub Nodes")
 async def nodes(req: Request) -> JSONResponse:
+    """Return all routable nodes in the NER graph (district headquarters, hubs, border crossings)."""
     return ok({"nodes": [
         {"id": n.id, "name": n.name, "state": n.state,
          "state_name": STATES[n.state], "lat": n.lat, "lon": n.lon,
@@ -203,7 +385,9 @@ async def nodes(req: Request) -> JSONResponse:
         for n in sorted(NODES.values(), key=lambda x: (x.state, x.name))]})
 
 
+@app.get("/api/corridors", tags=["Network & Geography"], summary="National Highway Corridors")
 async def corridors(req: Request) -> JSONResponse:
+    """List major strategic corridors and national highways across the Northeast."""
     return ok({"corridors": [
         {"code": c.code, "name": c.name, "road_class": c.road_class,
          "lanes": c.lanes, "strategic": c.strategic, "notes": c.notes,
@@ -212,9 +396,21 @@ async def corridors(req: Request) -> JSONResponse:
         for c in CORRIDORS]})
 
 
-async def weather(req: Request) -> JSONResponse:
-    ts = qp(req, "ts") or inference.now_ts()
-    wx = inference.apply_overrides(inference.weather_at(ts),
+@app.get("/api/weather", tags=["Network & Geography"], summary="District Weather & Soil Saturation")
+async def weather(
+    req: Request,
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """District-level weather readings, 24h rainfall, and 7-day antecedent precipitation index."""
+    timestamp = qp(req, "ts") or inference.now_ts()
+    wx = inference.apply_overrides(inference.weather_at(timestamp),
                                    overrides_from_query(req))
     d = inference.districts()
     out = []
@@ -222,11 +418,24 @@ async def weather(req: Request) -> JSONResponse:
         di = d.get(name, {})
         out.append({**row, "lat": di.get("lat"), "lon": di.get("lon"),
                     "state": di.get("state"), "elev_m": di.get("elev_m")})
-    return ok({"ts": ts, "districts": out})
+    return ok({"ts": timestamp, "districts": out})
 
 
-async def segment_detail(req: Request) -> JSONResponse:
-    rid = req.path_params["road_id"]
+@app.get("/api/segment/{road_id:path}", tags=["Network & Geography"], summary="Segment Details & AI Explanation")
+async def segment_detail(
+    req: Request,
+    road_id: str = Path(..., description="Road segment ID (e.g. AS_NH27_001)"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Return single segment features, recent incident history, and exact decision-path risk attribution."""
+    rid = road_id
     st = inference.network_state(qp(req, "ts"), overrides_from_query(req))
     seg = st["segments"].get(rid)
     if not seg:
@@ -256,38 +465,67 @@ async def segment_detail(req: Request) -> JSONResponse:
 
 
 # ==========================================================================
-# ROUTING
+# ROUTING & RESILIENCE
 # ==========================================================================
-async def route(req: Request) -> JSONResponse:
-    o = (qp(req, "origin") or "").upper()
-    d = (qp(req, "dest") or "").upper()
-    prof = qp(req, "profile", "balanced")
-    k = int(qf(req, "k", 3) or 3)
+@app.get("/api/route", tags=["Routing & Resilience"], summary="Plan Multimodal / Multi-criteria Routes")
+async def route(
+    req: Request,
+    origin: str = Query("GUWAHATI", description="Origin node code"),
+    dest: str = Query("SHILLONG", description="Destination node code"),
+    profile: str = Query("balanced", description="Routing profile: fastest | balanced | safest | emergency"),
+    k: int = Query(3, ge=1, le=5, description="Number of candidate alternative routes"),
+    cargo: Optional[str] = Query(None, description="Cargo type (blood, oxygen, vaccine, perishable, relief, medicine, general)"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Plan K risk-aware routes between origin and destination with delay estimates and cargo check."""
+    o = (origin or "").upper()
+    d = (dest or "").upper()
+    prof = profile or "balanced"
     try:
-        res = routing.plan(o, d, prof, ts=qp(req, "ts"), k=max(1, min(k, 5)),
+        res = routing.plan(o, d, prof, ts=ts or qp(req, "ts"), k=max(1, min(k, 5)),
                            overrides=overrides_from_query(req))
     except ValueError as e:
         return err(str(e), 400)
-    except Exception as e:
+    except Exception:
         return err("routing failed", 500, traceback.format_exc(limit=3))
 
-    cargo = qp(req, "cargo")
-    if cargo and res.get("routes"):
-        res["cargo_check"] = routing.cargo_viability(res["routes"][0], cargo)
+    cargo_val = cargo or qp(req, "cargo")
+    if cargo_val and res.get("routes"):
+        res["cargo_check"] = routing.cargo_viability(res["routes"][0], cargo_val)
     return ok(res)
 
 
-async def route_compare(req: Request) -> JSONResponse:
-    """One row per candidate route — the side-by-side table the UI renders."""
-    o = (qp(req, "origin") or "").upper()
-    d = (qp(req, "dest") or "").upper()
-    ts = qp(req, "ts")
+@app.get("/api/route/compare", tags=["Routing & Resilience"], summary="Compare All Routing Profiles Side-by-Side")
+async def route_compare(
+    req: Request,
+    origin: str = Query("GUWAHATI", description="Origin node code"),
+    dest: str = Query("SHILLONG", description="Destination node code"),
+    profile: str = Query("balanced", description="Primary profile"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Evaluate fastest, balanced, safest, and emergency trade-offs for a given origin-destination pair."""
+    o = (origin or "").upper()
+    d = (dest or "").upper()
+    timestamp = ts or qp(req, "ts")
     ov = overrides_from_query(req)
     out: Dict[str, Any] = {"origin": o, "dest": d, "by_profile": [], "routes": []}
     try:
-        # the same OD under every profile — shows the trade-off explicitly
         for key in ("fastest", "balanced", "safest", "emergency"):
-            r = routing.plan(o, d, key, ts=ts, k=1, overrides=ov)
+            r = routing.plan(o, d, key, ts=timestamp, k=1, overrides=ov)
             if r.get("routes"):
                 b = r["routes"][0]
                 out["by_profile"].append({
@@ -305,15 +543,12 @@ async def route_compare(req: Request) -> JSONResponse:
                     "worst_segment": b["worst_segment"],
                     "geometry": b["geometry"],
                 })
-        main = routing.plan(o, d, qp(req, "profile", "balanced"), ts=ts, k=3,
+        main = routing.plan(o, d, profile or "balanced", ts=timestamp, k=3,
                             overrides=ov)
         out["routes"] = main.get("routes", [])
         out["comparison_note"] = main.get("comparison_note")
         out["ts"] = main.get("ts")
 
-        # When every profile returns the same road, that is a FINDING, not a
-        # bug: the destination has no route choice at all. Say so — it is the
-        # single most important fact about NER logistics.
         distinct = {tuple(r["path_names"]) for r in out["by_profile"]}
         out["distinct_routes_across_profiles"] = len(distinct)
         if len(distinct) == 1 and len(out["by_profile"]) > 1:
@@ -332,43 +567,89 @@ async def route_compare(req: Request) -> JSONResponse:
     return ok(out)
 
 
-async def departure(req: Request) -> JSONResponse:
-    o = (qp(req, "origin") or "").upper()
-    d = (qp(req, "dest") or "").upper()
+@app.get("/api/departure", tags=["Routing & Resilience"], summary="Optimal Departure Window Sweeper")
+async def departure(
+    req: Request,
+    origin: str = Query("GUWAHATI", description="Origin node"),
+    dest: str = Query("SHILLONG", description="Destination node"),
+    profile: str = Query("balanced", description="Profile"),
+    horizon: int = Query(72, ge=6, le=78, description="Horizon sweep hours (6 to 78)"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+) -> JSONResponse:
+    """Simulate route risk every 3 hours over a 48-72h horizon to identify optimal departure timing."""
+    o = (origin or "").upper()
+    d = (dest or "").upper()
     if o not in NODES or d not in NODES:
         return err("unknown origin or dest", 400)
-    hz = int(qf(req, "horizon", 72) or 72)
+    hz = horizon or 72
     try:
         return ok(routing.departure_windows(
-            o, d, qp(req, "profile", "balanced"),
-            horizon_hours=max(6, min(hz, 78)), ts=qp(req, "ts")))
+            o, d, profile or "balanced",
+            horizon_hours=max(6, min(hz, 78)), ts=ts or qp(req, "ts")))
     except Exception:
         return err("departure sweep failed", 500, traceback.format_exc(limit=3))
 
 
-async def criticality(req: Request) -> JSONResponse:
+@app.get("/api/criticality", tags=["Routing & Resilience"], summary="Single-Point-of-Failure Ranking")
+async def criticality(
+    req: Request,
+    hub: Optional[str] = Query(None, description="Central supply hub node ID (default GUWAHATI)"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Rank road segments whose disruption isolates the highest number of districts or population."""
     try:
-        return ok(routing.criticality(qp(req, "ts"),
-                                      hub=(qp(req, "hub", routing.SUPPLY_HUB) or
-                                           routing.SUPPLY_HUB).upper(),
+        selected_hub = (hub or qp(req, "hub", routing.SUPPLY_HUB) or routing.SUPPLY_HUB).upper()
+        return ok(routing.criticality(ts or qp(req, "ts"),
+                                      hub=selected_hub,
                                       overrides=overrides_from_query(req)))
     except Exception:
         return err("criticality failed", 500, traceback.format_exc(limit=3))
 
 
-async def accessibility(req: Request) -> JSONResponse:
+@app.get("/api/accessibility", tags=["Routing & Resilience"], summary="District Accessibility & Isolation Index")
+async def accessibility(
+    req: Request,
+    hub: Optional[str] = Query(None, description="Central supply hub node ID (default GUWAHATI)"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Measure connectivity, travel time, and vulnerability for every district capital in the Northeast."""
     try:
-        return ok(routing.accessibility(qp(req, "ts"),
-                                        hub=(qp(req, "hub", routing.SUPPLY_HUB) or
-                                             routing.SUPPLY_HUB).upper(),
+        selected_hub = (hub or qp(req, "hub", routing.SUPPLY_HUB) or routing.SUPPLY_HUB).upper()
+        return ok(routing.accessibility(ts or qp(req, "ts"),
+                                        hub=selected_hub,
                                         overrides=overrides_from_query(req)))
     except Exception:
         return err("accessibility failed", 500, traceback.format_exc(limit=3))
 
 
-async def heatmap(req: Request) -> JSONResponse:
-    """District-level aggregation for the choropleth layer."""
-    st = inference.network_state(qp(req, "ts"), overrides_from_query(req))
+@app.get("/api/heatmap", tags=["Routing & Resilience"], summary="District-Level Risk Choropleth Data")
+async def heatmap(
+    req: Request,
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """District-level aggregations of road length, blocked km, and mean severity for GIS choropleth maps."""
+    st = inference.network_state(ts or qp(req, "ts"), overrides_from_query(req))
     dist = inference.districts()
     agg: Dict[str, dict] = {}
     for s in st["segments"].values():
@@ -408,23 +689,154 @@ async def heatmap(req: Request) -> JSONResponse:
                       "moderate" if a["mean_severity"] >= 0.22 else "low")
         out.append(a)
     out.sort(key=lambda x: -x["mean_severity"])
-    return ok({"ts": st["ts"], "districts": out,
-               "hotspots": out[:12]})
+    return ok({"ts": st["ts"], "districts": out, "hotspots": out[:12]})
+
+
+@app.get("/api/cargo", tags=["Routing & Resilience"], summary="Critical Cargo Viability & Spoilage Check")
+async def cargo(
+    req: Request,
+    origin: str = Query("GUWAHATI", description="Origin node"),
+    dest: str = Query("SHILLONG", description="Destination node"),
+    cargo_type: str = Query("vaccine", description="blood | oxygen | vaccine | perishable | relief | medicine | general"),
+    profile: str = Query("emergency", description="Routing profile"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Check whether time-sensitive cargo will spoil given predicted delays along the emergency route."""
+    o = (origin or "").upper()
+    d = (dest or "").upper()
+    ctype = cargo_type or "vaccine"
+    if o not in NODES or d not in NODES:
+        return err("unknown origin or dest", 400)
+    res = routing.plan(o, d, profile or "emergency", ts=ts or qp(req, "ts"), k=2,
+                       overrides=overrides_from_query(req))
+    if not res.get("routes"):
+        return err("no route", 404)
+    best = res["routes"][0]
+    check = routing.cargo_viability(best, ctype)
+    al = None
+    if check["severity"] == "critical":
+        al = alerts_mod.cargo_alert(
+            check["cargo_label"], NODES[d].name, best["eta_text"],
+            int(check["max_transit_hours"]), NODES[d].state, check["advice"])
+    return ok({
+        "origin": o, "dest": d, "cargo": check, "route": best,
+        "cargo_types": routing.CARGO, "alert": al,
+    })
+
+
+@app.get("/api/whatif", tags=["Routing & Resilience"], summary="Climate What-If Counterfactual Simulator")
+async def whatif(
+    req: Request,
+    rain_multiplier: Optional[float] = Query(None, description="Precipitation multiplier (e.g. 2.0 for 2x rain)"),
+    rain_24h_set: Optional[float] = Query(None, description="Fixed 24h rainfall in mm"),
+    api_multiplier: Optional[float] = Query(None, description="API 7-day saturation multiplier"),
+    api_set: Optional[float] = Query(None, description="Fixed API 7-day value"),
+    temperature_delta: Optional[float] = Query(None, description="Temperature delta in Celsius"),
+    condition_set: Optional[str] = Query(None, description="Weather condition (e.g. monsoon_downpour)"),
+    states: Optional[str] = Query(None, description="Target states (e.g. ML,AS)"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+) -> JSONResponse:
+    """Compare baseline network conditions against simulated extreme weather or disruption events."""
+    timestamp = ts or qp(req, "ts")
+    ov = overrides_from_query(req)
+    if not ov:
+        return err("supply at least one scenario parameter "
+                   "(rain_24h_set, rain_multiplier, api_set, api_multiplier, "
+                   "temperature_delta, condition_set; optional states=ML,AS)", 400)
+    base = inference.network_state(timestamp)
+    cf = inference.network_state(timestamp, ov)
+
+    changed = []
+    for rid, b in base["segments"].items():
+        c = cf["segments"][rid]
+        if c["risk_label"] != b["risk_label"]:
+            changed.append({
+                "road_id": rid, "name": b["name"], "corridor": b["corridor"],
+                "state": b["state"], "coords": b["coords"],
+                "from": b["risk_status"], "to": c["risk_status"],
+                "severity_before": b["severity"], "severity_after": c["severity"],
+                "delay_before": b["delay_hours"], "delay_after": c["delay_hours"],
+                "direction": "worse" if c["risk_label"] > b["risk_label"] else "better",
+            })
+    changed.sort(key=lambda x: -(x["severity_after"] - x["severity_before"]))
+
+    newly_isolated: List[dict] = []
+    try:
+        ab = routing.accessibility(timestamp)
+        ac = routing.accessibility(timestamp, overrides=ov)
+        bidx = {d["node_id"]: d for d in ab["districts"]}
+        for d in ac["districts"]:
+            b = bidx.get(d["node_id"])
+            if not b:
+                continue
+            drop = (b["index"] or 0) - (d["index"] or 0)
+            if drop >= 8:
+                newly_isolated.append({
+                    "district": d["district"], "state": d["state"],
+                    "index_before": b["index"], "index_after": d["index"],
+                    "drop": round(drop, 1),
+                    "grade_before": b["grade"], "grade_after": d["grade"],
+                    "hours_before": b["travel_hours"], "hours_after": d["travel_hours"],
+                })
+        newly_isolated.sort(key=lambda x: -x["drop"])
+    except Exception:
+        pass
+
+    return ok({
+        "ts": base["ts"],
+        "scenario": ov,
+        "baseline": base["summary"],
+        "counterfactual": cf["summary"],
+        "delta": {
+            "blocked": cf["summary"]["blocked"] - base["summary"]["blocked"],
+            "risky": cf["summary"]["risky"] - base["summary"]["risky"],
+            "safe": cf["summary"]["safe"] - base["summary"]["safe"],
+            "km_blocked": round(cf["summary"]["km_blocked"] -
+                                base["summary"]["km_blocked"], 1),
+            "mean_severity": round(cf["summary"]["mean_severity"] -
+                                   base["summary"]["mean_severity"], 4),
+        },
+        "segments_changed": changed[:60],
+        "n_segments_changed": len(changed),
+        "accessibility_impact": newly_isolated[:15],
+    })
 
 
 # ==========================================================================
-# ALERTS + INCIDENTS
+# ALERTS & INCIDENTS
 # ==========================================================================
-async def get_alerts(req: Request) -> JSONResponse:
-    st = inference.network_state(qp(req, "ts"), overrides_from_query(req))
-    lim = int(qf(req, "limit", 30) or 30)
+@app.get("/api/alerts", tags=["Alerts & Incidents"], summary="Multilingual Control Room Alert Feed")
+async def get_alerts(
+    req: Request,
+    limit: int = Query(30, ge=1, le=80, description="Max alerts to return"),
+    lang: Optional[str] = Query(None, description="ISO language filter (e.g. as, bn, mni, hi, en)"),
+    persist: bool = Query(False, description="Persist generated alerts to SQLite log"),
+    ts: Optional[str] = Query(None, description="ISO timestamp"),
+    rain_multiplier: Optional[float] = Query(None),
+    rain_24h_set: Optional[float] = Query(None),
+    api_multiplier: Optional[float] = Query(None),
+    api_set: Optional[float] = Query(None),
+    temperature_delta: Optional[float] = Query(None),
+    condition_set: Optional[str] = Query(None),
+    states: Optional[str] = Query(None),
+) -> JSONResponse:
+    """Retrieve prioritized control room alerts with native multilingual translations."""
+    st = inference.network_state(ts or qp(req, "ts"), overrides_from_query(req))
+    lim = limit or 30
     feed = alerts_mod.build_alert_feed(st, limit=max(1, min(lim, 80)))
-    lang = qp(req, "lang")
-    if lang:
+    lang_val = lang or qp(req, "lang")
+    if lang_val:
         for a in feed:
-            if lang in a.get("text", {}):
-                a["text"] = {lang: a["text"][lang], "en": a["text"].get("en")}
-    if qp(req, "persist") in ("1", "true"):
+            if lang_val in a.get("text", {}):
+                a["text"] = {lang_val: a["text"][lang_val], "en": a["text"].get("en")}
+    if persist or qp(req, "persist") in ("1", "true"):
         try:
             alerts_mod.persist(feed)
         except Exception:
@@ -432,27 +844,42 @@ async def get_alerts(req: Request) -> JSONResponse:
     return ok({"ts": st["ts"], "count": len(feed), "alerts": feed})
 
 
-async def get_incidents(req: Request) -> JSONResponse:
+@app.get("/api/incidents", tags=["Alerts & Incidents"], summary="Incident Log & Filter")
+async def get_incidents(
+    req: Request,
+    road_id: Optional[str] = Query(None, description="Filter by road ID"),
+    state: Optional[str] = Query(None, description="Filter by state (e.g. AS, ML)"),
+    issue_type: Optional[str] = Query(None, description="Filter by issue type (landslide, flood, etc.)"),
+    severity: Optional[str] = Query(None, description="Filter by severity (low, medium, high)"),
+    since: Optional[str] = Query(None, description="Filter incidents reported after ISO timestamp"),
+    limit: int = Query(200, ge=1, le=2000, description="Max records to return"),
+) -> JSONResponse:
+    """Query field-reported incidents from SQLite with optional filtering by location or type."""
     where, params = [], []
-    if qp(req, "road_id"):
+    r_id = road_id or qp(req, "road_id")
+    if r_id:
         where.append("road_id = ?")
-        params.append(qp(req, "road_id"))
-    if qp(req, "state"):
+        params.append(r_id)
+    st = state or qp(req, "state")
+    if st:
         where.append("state = ?")
-        params.append(qp(req, "state").upper())
-    if qp(req, "issue_type"):
+        params.append(st.upper())
+    iss = issue_type or qp(req, "issue_type")
+    if iss:
         where.append("issue_type = ?")
-        params.append(qp(req, "issue_type"))
-    if qp(req, "severity"):
+        params.append(iss)
+    sev = severity or qp(req, "severity")
+    if sev:
         where.append("severity = ?")
-        params.append(qp(req, "severity"))
-    if qp(req, "since"):
+        params.append(sev)
+    sc = since or qp(req, "since")
+    if sc:
         where.append("reported_at >= ?")
-        params.append(qp(req, "since"))
+        params.append(sc)
     sql = "SELECT * FROM incidents"
     if where:
         sql += " WHERE " + " AND ".join(where)
-    lim = int(qf(req, "limit", 200) or 200)
+    lim = limit or 200
     sql += f" ORDER BY reported_at DESC LIMIT {max(1, min(lim, 2000))}"
     rows = db.query(sql, tuple(params))
     stats = db.query("SELECT issue_type, COUNT(*) n FROM incidents "
@@ -460,14 +887,19 @@ async def get_incidents(req: Request) -> JSONResponse:
     return ok({"count": len(rows), "incidents": rows, "by_type": stats})
 
 
-async def post_incident(req: Request) -> JSONResponse:
+@app.post("/api/incidents", tags=["Alerts & Incidents"], summary="Submit Geo-Tagged Incident Report", status_code=201)
+async def post_incident(
+    req: Request,
+    payload: Optional[IncidentReportSchema] = Body(None, description="JSON incident report body"),
+) -> JSONResponse:
     """
-    Field-reporter ingestion. Accepts JSON or multipart (with a photo).
-    Designed for the offline PWA: the client queues reports locally and replays
-    them here when a signal returns, so `client_id` de-duplicates retries.
+    Field-reporter ingestion. Accepts JSON body or multipart form data (with optional photo attachment).
+    Supports client_id de-duplication for offline PWA sync.
     """
     ct = req.headers.get("content-type", "")
     photo_url = None
+    data: Dict[str, Any] = {}
+
     try:
         if "multipart/form-data" in ct:
             form = await req.form()
@@ -478,8 +910,11 @@ async def post_incident(req: Request) -> JSONResponse:
                 fn = f"{uuid.uuid4().hex[:12]}{ext}"
                 path = os.path.join(db.UPLOAD_DIR, fn)
                 with open(path, "wb") as f:
-                    f.write(await up.read())
+                    content = await up.read()
+                    f.write(content)
                 photo_url = f"/uploads/{fn}"
+        elif payload is not None:
+            data = payload.model_dump(exclude_none=True)
         else:
             data = await req.json()
     except Exception as e:
@@ -530,10 +965,6 @@ async def post_incident(req: Request) -> JSONResponse:
         return err("could not associate the report with a road segment", 400)
 
     iid = f"FLD-{client_id[:14]}" if client_id else f"FLD-{uuid.uuid4().hex[:10]}"
-    # Stamp against the SYSTEM clock the rest of the app runs on, not wall clock.
-    # The incident-memory features select `reported_at <= ts`, so a report
-    # stamped in the future would be silently invisible to the very model it is
-    # supposed to inform — the feedback loop has to actually close.
     reported_at = g("reported_at") or inference.now_ts()
     if reported_at > inference.now_ts():
         reported_at = inference.now_ts()
@@ -556,138 +987,93 @@ async def post_incident(req: Request) -> JSONResponse:
     }, 201)
 
 
-def _point_seg_km(plat, plon, alat, alon, blat, blon) -> float:
-    """Great-circle-ish distance from a point to a segment (planar approx)."""
-    from .geography import haversine_km
-    ax, ay = alon, alat
-    bx, by = blon, blat
-    px, py = plon, plat
-    dx, dy = bx - ax, by - ay
-    if dx == 0 and dy == 0:
-        return haversine_km(plat, plon, alat, alon)
-    t = ((px - ax) * dx + (py - ay) * dy) / (dx * dx + dy * dy)
-    t = max(0.0, min(1.0, t))
-    cx, cy = ax + t * dx, ay + t * dy
-    return haversine_km(plat, plon, cy, cx)
-
-
 # ==========================================================================
-# CARGO + WHAT-IF
+# LIVE WEATHER
 # ==========================================================================
-async def cargo(req: Request) -> JSONResponse:
-    o = (qp(req, "origin") or "").upper()
-    d = (qp(req, "dest") or "").upper()
-    ctype = qp(req, "cargo_type", "vaccine")
-    if o not in NODES or d not in NODES:
-        return err("unknown origin or dest", 400)
-    res = routing.plan(o, d, qp(req, "profile", "emergency"), ts=qp(req, "ts"), k=2,
-                       overrides=overrides_from_query(req))
-    if not res.get("routes"):
-        return err("no route", 404)
-    best = res["routes"][0]
-    check = routing.cargo_viability(best, ctype)
-    al = None
-    if check["severity"] == "critical":
-        al = alerts_mod.cargo_alert(
-            check["cargo_label"], NODES[d].name, best["eta_text"],
-            int(check["max_transit_hours"]), NODES[d].state, check["advice"])
+@app.get("/api/weather/status", tags=["Live Weather"], summary="Live Weather Provenance & Status")
+async def weather_status(req: Request) -> JSONResponse:
+    """Return status of the Open-Meteo weather station pipeline and refresh timestamp."""
+    last = wx_live.last_refresh()
     return ok({
-        "origin": o, "dest": d, "cargo": check, "route": best,
-        "cargo_types": routing.CARGO, "alert": al,
+        "config": config.describe(),
+        "last_live_refresh": last,
+        "source": "open-meteo" if last else "simulated (built-in climatology)",
+        "provider_note": (
+            "Open-Meteo needs no API key. The adapter computes rainfall_24h, "
+            "rainfall_72h and the 7-day antecedent index with exactly the same "
+            "definitions the models were trained on — see "
+            "backend/providers/weather_openmeteo.py."),
     })
 
 
-async def whatif(req: Request) -> JSONResponse:
-    """Baseline vs counterfactual, with the delta that makes the point."""
-    ts = qp(req, "ts")
-    ov = overrides_from_query(req)
-    if not ov:
-        return err("supply at least one scenario parameter "
-                   "(rain_24h_set, rain_multiplier, api_set, api_multiplier, "
-                   "temperature_delta, condition_set; optional states=ML,AS)", 400)
-    base = inference.network_state(ts)
-    cf = inference.network_state(ts, ov)
+@app.post("/api/weather/refresh", tags=["Live Weather"], summary="Force Refresh Live Weather")
+async def weather_refresh(req: Request) -> JSONResponse:
+    """Fetch latest weather observation directly from Open-Meteo and update model cache."""
+    res = await asyncio.to_thread(wx_live.refresh, False)
+    inference.invalidate_cache()
+    if res.get("ok"):
+        res["summary"] = inference.network_state()["summary"]
+    return ok(res, 200 if res.get("ok") else 503)
 
-    changed = []
-    for rid, b in base["segments"].items():
-        c = cf["segments"][rid]
-        if c["risk_label"] != b["risk_label"]:
-            changed.append({
-                "road_id": rid, "name": b["name"], "corridor": b["corridor"],
-                "state": b["state"], "coords": b["coords"],
-                "from": b["risk_status"], "to": c["risk_status"],
-                "severity_before": b["severity"], "severity_after": c["severity"],
-                "delay_before": b["delay_hours"], "delay_after": c["delay_hours"],
-                "direction": "worse" if c["risk_label"] > b["risk_label"] else "better",
-            })
-    changed.sort(key=lambda x: -(x["severity_after"] - x["severity_before"]))
 
-    newly_isolated: List[dict] = []
+# ==========================================================================
+# REAL GPS TRACKING & FLEET
+# ==========================================================================
+@app.get("/api/track", tags=["Tracking & Fleet"], summary="List Active Real-Time Tracked Vehicles")
+async def track_get(req: Request) -> JSONResponse:
+    """List real-time GPS coordinates and snapped road locations of connected drivers."""
+    return ok(gps_mod.live_fleet())
+
+
+@app.post("/api/track", tags=["Tracking & Fleet"], summary="Ingest Real-Time GPS Fix", status_code=201)
+async def track_post(
+    req: Request,
+    payload: Optional[GPSTrackingPayload] = Body(None, description="GPS tracking fix JSON payload"),
+) -> JSONResponse:
+    """Ingest a GPS fix from a phone browser, VTS device, or AIS-140 in-vehicle tracker."""
+    data: Dict[str, Any] = {}
+    if payload is not None:
+        data = payload.model_dump(exclude_none=True)
+    else:
+        try:
+            data = await req.json()
+        except Exception:
+            try:
+                form = await req.form()
+                data = {k: form[k] for k in form}
+            except Exception:
+                return err("could not parse body — send JSON with lat/lon", 400)
     try:
-        ab = routing.accessibility(ts)
-        ac = routing.accessibility(ts, overrides=ov)
-        bidx = {d["node_id"]: d for d in ab["districts"]}
-        for d in ac["districts"]:
-            b = bidx.get(d["node_id"])
-            if not b:
-                continue
-            drop = (b["index"] or 0) - (d["index"] or 0)
-            if drop >= 8:
-                newly_isolated.append({
-                    "district": d["district"], "state": d["state"],
-                    "index_before": b["index"], "index_after": d["index"],
-                    "drop": round(drop, 1),
-                    "grade_before": b["grade"], "grade_after": d["grade"],
-                    "hours_before": b["travel_hours"], "hours_after": d["travel_hours"],
-                })
-        newly_isolated.sort(key=lambda x: -x["drop"])
+        res = await asyncio.to_thread(gps_mod.ingest, data)
+    except ValueError as e:
+        return err(str(e), 400)
     except Exception:
-        pass
-
-    return ok({
-        "ts": base["ts"],
-        "scenario": ov,
-        "baseline": base["summary"],
-        "counterfactual": cf["summary"],
-        "delta": {
-            "blocked": cf["summary"]["blocked"] - base["summary"]["blocked"],
-            "risky": cf["summary"]["risky"] - base["summary"]["risky"],
-            "safe": cf["summary"]["safe"] - base["summary"]["safe"],
-            "km_blocked": round(cf["summary"]["km_blocked"] -
-                                base["summary"]["km_blocked"], 1),
-            "mean_severity": round(cf["summary"]["mean_severity"] -
-                                   base["summary"]["mean_severity"], 4),
-        },
-        "segments_changed": changed[:60],
-        "n_segments_changed": len(changed),
-        "accessibility_impact": newly_isolated[:15],
-    })
+        return err("tracking failed", 500, traceback.format_exc(limit=3))
+    return ok(res, 201)
 
 
-# ==========================================================================
-# FLEET
-# ==========================================================================
+@app.post("/api/track/forget", tags=["Tracking & Fleet"], summary="Drop Tracked Vehicle")
+async def track_delete(
+    req: Request,
+    payload: Optional[ForgetVehiclePayload] = Body(None, description="Vehicle ID payload to drop"),
+    vehicle_id: Optional[str] = Query(None, description="Vehicle ID as query parameter"),
+) -> JSONResponse:
+    """Remove a vehicle from the active tracking map."""
+    vid = (payload.vehicle_id if payload else None) or vehicle_id or qp(req, "vehicle_id")
+    if not vid:
+        return err("vehicle_id is required", 400)
+    return ok({"forgotten": gps_mod.forget(vid), "vehicle_id": vid})
+
+
+@app.get("/api/fleet", tags=["Tracking & Fleet"], summary="Simulated Fleet Snapshot")
 async def fleet_snapshot(req: Request) -> JSONResponse:
+    """Current positions, assigned routes, and delay alerts for simulated fleet trucks."""
     return ok(FLEET.snapshot())
 
 
-async def fleet_reset(req: Request) -> JSONResponse:
-    FLEET.reset()
-    return ok({"status": "reset", "vehicles": len(FLEET.vehicles)})
-
-
+@app.get("/api/fleet/stream", tags=["Tracking & Fleet"], summary="Live Fleet Telemetry (SSE)")
 async def fleet_stream(req: Request) -> Response:
-    """
-    Live fleet telemetry over Server-Sent Events.
-
-    SSE is the PRIMARY transport here, deliberately. Fleet telemetry is strictly
-    one-way (server → control room), which is exactly what SSE is for: it runs
-    over plain HTTP/1.1 with no extra dependency, reconnects automatically in
-    the browser, and passes through corporate proxies that drop WebSocket
-    upgrades. The /ws/fleet WebSocket below is kept for clients that want
-    bidirectional control and activates automatically when a WebSocket library
-    is installed.
-    """
+    """Live Server-Sent Events (SSE) telemetry stream pushing truck positions every second."""
     async def gen():
         q = await FLEET.subscribe()
         try:
@@ -712,7 +1098,16 @@ async def fleet_stream(req: Request) -> Response:
     })
 
 
+@app.post("/api/fleet/reset", tags=["Tracking & Fleet"], summary="Reset Fleet Simulation")
+async def fleet_reset(req: Request) -> JSONResponse:
+    """Re-plan all simulated delivery routes and restart vehicle positions from hubs."""
+    FLEET.reset()
+    return ok({"status": "reset", "vehicles": len(FLEET.vehicles)})
+
+
+@app.websocket("/ws/fleet")
 async def ws_fleet(ws: WebSocket) -> None:
+    """Bidirectional WebSocket connection for live fleet positions and alerts."""
     await ws.accept()
     q = await FLEET.subscribe()
     try:
@@ -729,183 +1124,41 @@ async def ws_fleet(ws: WebSocket) -> None:
 
 
 # ==========================================================================
-# LIVE WEATHER
+# STATIC / PAGES / FALLBACK
 # ==========================================================================
-async def weather_status(req: Request) -> JSONResponse:
-    last = wx_live.last_refresh()
-    return ok({
-        "config": config.describe(),
-        "last_live_refresh": last,
-        "source": "open-meteo" if last else "simulated (built-in climatology)",
-        "provider_note": (
-            "Open-Meteo needs no API key. The adapter computes rainfall_24h, "
-            "rainfall_72h and the 7-day antecedent index with exactly the same "
-            "definitions the models were trained on — see "
-            "backend/providers/weather_openmeteo.py."),
-    })
-
-
-async def weather_refresh(req: Request) -> JSONResponse:
-    """Pull live weather now. Safe to call any time; never takes the app down."""
-    res = await asyncio.to_thread(wx_live.refresh, False)
-    inference.invalidate_cache()
-    if res.get("ok"):
-        res["summary"] = inference.network_state()["summary"]
-    return ok(res, 200 if res.get("ok") else 503)
-
-
-# ==========================================================================
-# REAL GPS TRACKING
-# ==========================================================================
-async def track_post(req: Request) -> JSONResponse:
-    try:
-        payload = await req.json()
-    except Exception:
-        try:
-            form = await req.form()
-            payload = {k: form[k] for k in form}
-        except Exception:
-            return err("could not parse body — send JSON with lat/lon", 400)
-    try:
-        res = await asyncio.to_thread(gps_mod.ingest, payload)
-    except ValueError as e:
-        return err(str(e), 400)
-    except Exception:
-        return err("tracking failed", 500, traceback.format_exc(limit=3))
-    return ok(res, 201)
-
-
-async def track_get(req: Request) -> JSONResponse:
-    return ok(gps_mod.live_fleet())
-
-
-async def track_delete(req: Request) -> JSONResponse:
-    vid = qp(req, "vehicle_id")
-    if not vid:
-        return err("vehicle_id is required", 400)
-    return ok({"forgotten": gps_mod.forget(vid), "vehicle_id": vid})
-
-
-async def page_track(req: Request) -> Response:
-    return FileResponse(os.path.join(FRONTEND, "track.html"))
-
-
-# ==========================================================================
-# STATIC / PAGES
-# ==========================================================================
+@app.get("/", include_in_schema=False)
 async def page_index(req: Request) -> Response:
     return FileResponse(os.path.join(FRONTEND, "index.html"))
 
 
+@app.get("/field", include_in_schema=False)
 async def page_field(req: Request) -> Response:
     return FileResponse(os.path.join(FRONTEND, "field.html"))
 
 
+@app.get("/track", include_in_schema=False)
+async def page_track(req: Request) -> Response:
+    return FileResponse(os.path.join(FRONTEND, "track.html"))
+
+
+@app.get("/sw.js", include_in_schema=False)
 async def sw_js(req: Request) -> Response:
     return FileResponse(os.path.join(FRONTEND, "sw.js"),
                         media_type="application/javascript")
 
 
+@app.exception_handler(404)
 async def not_found(req: Request, exc) -> Response:
     if req.url.path.startswith("/api"):
-        return err("no such endpoint — see GET /api", 404)
+        return err("no such endpoint — see GET /api or /docs", 404)
     return FileResponse(os.path.join(FRONTEND, "index.html"))
 
 
+@app.exception_handler(500)
 async def server_error(req: Request, exc) -> Response:
     return err("internal error", 500, str(exc))
 
 
-routes = [
-    Route("/", page_index),
-    Route("/field", page_field),
-    Route("/track", page_track),
-    Route("/sw.js", sw_js),
-
-    Route("/api", api_index),
-    Route("/api/health", health),
-    Route("/api/metrics", metrics),
-    Route("/api/languages", languages),
-
-    Route("/api/network", network),
-    Route("/api/network/summary", network_summary),
-    Route("/api/nodes", nodes),
-    Route("/api/corridors", corridors),
-    Route("/api/weather", weather),
-    Route("/api/segment/{road_id:path}", segment_detail),
-
-    Route("/api/route", route),
-    Route("/api/route/compare", route_compare),
-    Route("/api/departure", departure),
-    Route("/api/criticality", criticality),
-    Route("/api/accessibility", accessibility),
-    Route("/api/heatmap", heatmap),
-
-    Route("/api/alerts", get_alerts),
-    Route("/api/incidents", get_incidents, methods=["GET"]),
-    Route("/api/incidents", post_incident, methods=["POST"]),
-
-    Route("/api/cargo", cargo),
-    Route("/api/whatif", whatif),
-
-    Route("/api/weather/status", weather_status),
-    Route("/api/weather/refresh", weather_refresh, methods=["POST"]),
-
-    Route("/api/track", track_get, methods=["GET"]),
-    Route("/api/track", track_post, methods=["POST"]),
-    Route("/api/track/forget", track_delete, methods=["POST"]),
-
-    Route("/api/fleet", fleet_snapshot),
-    Route("/api/fleet/stream", fleet_stream),
-    Route("/api/fleet/reset", fleet_reset, methods=["POST"]),
-    WebSocketRoute("/ws/fleet", ws_fleet),
-]
-
-# ==========================================================================
-# STARTUP — live weather refresh loop
-# ==========================================================================
-async def _weather_loop() -> None:
-    """Refresh live weather on boot, then on an interval. Failures are logged
-    and swallowed: a dead network must never take the dashboard down."""
-    first = True
-    while True:
-        try:
-            res = await asyncio.to_thread(wx_live.refresh, True)
-            if res.get("ok"):
-                inference.invalidate_cache()
-            elif first:
-                print("[weather] falling back to the built-in simulated "
-                      "climatology — the app is fully functional, just not live.")
-        except Exception as e:
-            print("[weather] refresh loop error:", e)
-        first = False
-        await asyncio.sleep(config.WEATHER_INTERVAL_MIN * 60)
-
-
-@asynccontextmanager
-async def lifespan(app):
-    """Starlette 1.x lifespan — replaces the removed on_startup hook."""
-    mode = "LIVE (Open-Meteo)" if config.LIVE_WEATHER else "SIMULATED"
-    print(f"[sentinel] weather source: {mode}")
-    print(f"[sentinel] GPS tracking:   "
-          f"{'enabled' if config.LIVE_GPS else 'disabled'}"
-          f"  -> open /track on a phone to stream real positions")
-    task = asyncio.create_task(_weather_loop()) if config.LIVE_WEATHER else None
-    try:
-        yield
-    finally:
-        if task:
-            task.cancel()
-
-
-app = Starlette(
-    debug=False,
-    routes=routes,
-    lifespan=lifespan,
-    middleware=[Middleware(CORSMiddleware, allow_origins=["*"],
-                           allow_methods=["*"], allow_headers=["*"])],
-    exception_handlers={404: not_found, 500: server_error},
-)
 app.mount("/static", StaticFiles(directory=FRONTEND), name="static")
 app.mount("/uploads", StaticFiles(directory=db.UPLOAD_DIR), name="uploads")
 
