@@ -51,7 +51,10 @@
       <!-- ---------- ROUTE ---------- -->
       <section class="pane on" data-p="route">
         <div class="fld">
-          <label class="lab" for="orig">Origin</label>
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+            <label class="lab" for="orig" style="margin:0">Origin</label>
+            <button type="button" id="swapcities" class="btn ghost sm" style="padding:1px 8px;font-size:11px;height:22px;line-height:1;width:auto" title="Swap Origin and Destination">⇄ Swap</button>
+          </div>
           <select id="orig"></select>
         </div>
         <div class="fld">
@@ -80,7 +83,10 @@
             <option value="general">General freight</option>
           </select>
         </div>
-        <button class="btn" id="goroute">Plan route</button>
+        <div class="btnrow" style="margin-bottom:8px">
+          <button class="btn" id="goroute">Plan route</button>
+          <button class="btn ghost danger" id="clearroute" title="Cancel past prediction and reset selection">Cancel prediction</button>
+        </div>
         <div class="btnrow">
           <button class="btn ghost sm" id="gocompare">Compare profiles</button>
           <button class="btn ghost sm" id="godep">Best departure</button>
@@ -203,6 +209,7 @@
       <button id="zin" title="Zoom in">+</button>
       <button id="zout" title="Zoom out">−</button>
       <button id="zfit" title="Fit network">⤢</button>
+      <button id="zdetail" title="Toggle Details panel">📋</button>
     </div>
 
     <div class="mapctl" id="layers">
