@@ -60,7 +60,7 @@ const MAP = {
          <stop offset="100%" stop-opacity="0"/></radialGradient>`;
 
     this.cam = el('g', { id: 'cam' }, this.svg);
-    for (const n of ['hull', 'grat', 'heat', 'seg', 'crit', 'route',
+    for (const n of ['hull', 'grat', 'heat', 'acc', 'seg', 'crit', 'route',
                      'node', 'inc', 'fleet', 'lbl'])
       this.layers[n] = el('g', { id: 'L-' + n }, this.cam);
 
@@ -120,6 +120,18 @@ const MAP = {
     $('#zin').onclick  = () => this.zoomBy(1.35);
     $('#zout').onclick = () => this.zoomBy(1 / 1.35);
     $('#zfit').onclick = () => this.fit();
+    const zd = $('#zdetail');
+    if (zd) {
+      zd.onclick = () => {
+        if ($('#app').classList.contains('no-right') || $('#right').classList.contains('closed')) {
+          $('#app').classList.remove('no-right');
+          $('#right').classList.remove('closed');
+          $('#right').classList.add('show');
+        } else {
+          closeRight();
+        }
+      };
+    }
   },
 
   zoomBy(f) {
@@ -386,6 +398,7 @@ function drawNodes() {
     pass:   { r: 4.8, f: '#fb923c', s: '#231203' },
     town:   { r: 3.0, f: '#7f9bb8', s: '#0a1118' }
   };
+  let lastNodeClicked = null;
   for (const n of S.nodes) {
     const [x, y] = MAP.p(n.lat, n.lon);
     const k = KIND[n.kind] || KIND.town;
@@ -396,14 +409,23 @@ function drawNodes() {
        <div class="tr"><span>${esc(n.state_name || n.state)}</span><b>${esc(n.kind)}</b></div>
        <div class="tr"><span>Elevation</span><b>${n.elev_m} m</b></div>
        <div class="tr"><span>Population</span><b>${n.population_k}k</b></div>
-       <div class="tr" style="margin-top:4px;color:#6b819a"><span>click: set as origin · shift-click: destination</span></div>`, ev));
+       <div class="tr" style="margin-top:4px;color:#6b819a"><span>click: set origin / destination · shift-click: destination</span></div>`, ev));
     c.addEventListener('mouseleave', () => TIP.hide());
     c.addEventListener('click', ev => {
       if (MAP.movedFar) return;
       ev.stopPropagation();
-      if (ev.shiftKey) { $('#dest').value = n.id; }
-      else { $('#orig').value = n.id; }
-      banner(`${ev.shiftKey ? 'Destination' : 'Origin'} set to ${n.name}`, 'info', 2200);
+      if (ev.shiftKey) {
+        $('#dest').value = n.id;
+        banner(`Destination set to ${n.name}`, 'info', 2200);
+      } else if (lastNodeClicked && lastNodeClicked !== n.id && $('#orig').value === lastNodeClicked) {
+        $('#dest').value = n.id;
+        lastNodeClicked = null;
+        banner(`Destination set to ${n.name}. Click "Plan route" to calculate.`, 'info', 3000);
+      } else {
+        $('#orig').value = n.id;
+        lastNodeClicked = n.id;
+        banner(`Origin set to ${n.name}. Click another city for destination (or shift-click).`, 'info', 3000);
+      }
     });
 
     if (S.layers.lbl) {
@@ -470,13 +492,14 @@ function drawCrit() {
 }
 
 function drawAcc() {
+  MAP.clear('acc');
   if (!S.layers.acc || !S.acc) return;
   for (const d of S.acc.districts) {
     if (!d.reachable || d.lat == null) continue;
     const [x, y] = MAP.p(d.lat, d.lon);
     const col = { A: '#2dd4a7', B: '#a3e635', C: '#fbbf24', D: '#fb923c',
                   E: '#ef4444', F: '#7f1d1d' }[d.grade] || '#6b819a';
-    const g = el('g', {}, MAP.layers.heat);
+    const g = el('g', {}, MAP.layers.acc);
     el('rect', { x: x - 7, y: y - 14.5, width: 14, height: 12, rx: 3.5,
       fill: col, opacity: .92 }, g);
     const t = el('text', { x, y: y - 5.5, 'text-anchor': 'middle',
@@ -666,9 +689,37 @@ async function planRoute() {
   }
 }
 
+function cancelPrediction() {
+  S.routes = [];
+  S.activeRoute = 0;
+  MAP.clear('route');
+  $('#routesum').innerHTML = '';
+  if ($('#rtitle').textContent.startsWith('Route') ||
+      $('#rtitle').textContent === 'Profile comparison' ||
+      $('#rtitle').textContent === 'Departure optimiser') {
+    closeRight();
+  }
+  banner('Past prediction cancelled. You can now select cities for the next prediction.', 'info', 3000);
+}
+
+function swapCities() {
+  const o = $('#orig').value, d = $('#dest').value;
+  $('#orig').value = d;
+  $('#dest').value = o;
+  const oTxt = $('#orig').selectedOptions[0]?.text?.replace(/ \(.*\)$/, '') || d;
+  const dTxt = $('#dest').selectedOptions[0]?.text?.replace(/ \(.*\)$/, '') || o;
+  banner(`Swapped cities: ${oTxt} ⇄ ${dTxt}`, 'info', 2200);
+  if (S.routes.length) {
+    planRoute();
+  }
+}
+
 function renderRouteCards(j) {
   if (!j.routes?.length) return `<div class="note crit">No road route found.</div>`;
-  let h = `<div class="sect">${esc(j.origin_name)} → ${esc(j.dest_name)}</div>`;
+  let h = `<div class="sect" style="display:flex;justify-content:space-between;align-items:center">
+    <span>${esc(j.origin_name)} → ${esc(j.dest_name)}</span>
+    <button class="closex" id="cancelpredx" title="Cancel this prediction" style="font-size:12px;color:#f87171;padding:2px 6px">✕ Clear</button>
+  </div>`;
   if (j.fallback_note) h += `<div class="note warn">${esc(j.fallback_note)}</div>`;
   j.routes.forEach((r, i) => {
     h += `<div class="rt r${Math.min(r.rank, 3)} ${i === 0 ? 'on' : ''}" data-i="${i}">
@@ -699,6 +750,8 @@ function renderRouteCards(j) {
 }
 
 function wireRouteCards() {
+  const cx = $('#cancelpredx');
+  if (cx) cx.onclick = cancelPrediction;
   $$('#routesum .rt').forEach(c => c.onclick = () => {
     S.activeRoute = +c.dataset.i;
     $$('#routesum .rt').forEach(x => x.classList.toggle('on', x === c));
@@ -710,12 +763,25 @@ function wireRouteCards() {
 /* ==========================================================================
    RIGHT PANEL
    ========================================================================== */
+function closeRight() {
+  $('#right').classList.remove('show');
+  $('#right').classList.add('closed');
+  $('#app').classList.add('no-right');
+  if (S.selectedSeg) {
+    S.selectedSeg = null;
+    MAP.clear('crit');
+    if (S.layers.crit) drawCrit();
+  }
+}
+
 function setRight(title, html) {
   $('#rtitle').textContent = title;
   $('#rbody').innerHTML = html;
+  $('#right').classList.remove('closed');
   $('#right').classList.add('show');
+  $('#app').classList.remove('no-right');
 }
-$('#rclose').onclick = () => $('#right').classList.remove('show');
+$('#rclose').onclick = closeRight;
 
 /* ---------- segment + XAI ---------- */
 async function openSegment(rid) {
@@ -896,8 +962,8 @@ async function compareProfiles() {
       h += `<div class="note crit"><b>No alternative exists.</b> ${esc(j.no_alternative_note.replace(/^All four[^.]*\. /, ''))}</div>`;
     h += `<div class="sect">Same origin-destination, four objectives</div>
       <table class="t"><tr><th>Profile</th><th>ETA</th><th>km</th><th>Peak risk</th><th>Blk</th></tr>`;
-    j.by_profile.forEach(p => {
-      h += `<tr data-geo='${encodeURIComponent(JSON.stringify(p.geometry))}'>
+    j.by_profile.forEach((p, idx) => {
+      h += `<tr class="proftr ${idx === 0 ? 'on' : ''}" data-idx="${idx}" title="Click to view this profile route on map">
         <td><b>${esc(p.label)}</b></td>
         <td class="num">${esc(p.eta_text)}</td>
         <td class="num">${fmt(p.distance_km, 0)}</td>
@@ -924,6 +990,20 @@ async function compareProfiles() {
     }
     if (j.comparison_note) h += `<div class="note">${esc(j.comparison_note)}</div>`;
     setRight('Profile comparison', h);
+
+    setTimeout(() => {
+      $$('#right .proftr').forEach(tr => {
+        tr.onclick = () => {
+          const idx = +tr.dataset.idx;
+          $$('#right .proftr').forEach(x => x.classList.toggle('on', x === tr));
+          if (S.routes[idx]) {
+            S.activeRoute = idx;
+            drawRoutes();
+            banner(`Showing route for profile: ${j.by_profile[idx]?.label}`, 'info', 2200);
+          }
+        };
+      });
+    }, 0);
   } catch (e) {
     setRight('Profile comparison', `<div class="note crit">${esc(e.message)}</div>`);
   }
@@ -945,25 +1025,25 @@ async function departureSweep() {
     let h = `<div class="note"><b>${esc(j.origin_name)} → ${esc(j.dest_name)}</b><br>
       ${esc(j.recommendation || '')}</div>`;
     h += `<div class="sect">Predicted transit by departure time</div><div class="dep">`;
-    j.windows.forEach(w => {
+    j.windows.forEach((w, idx) => {
       if (!w.feasible) { h += `<div class="depb" style="height:6px;background:#33475e"
         title="infeasible"></div>`; return; }
       const hgt = 12 + (w.eta_hours - min) / Math.max(max - min, .01) * 88;
       const isBest = best && w.depart_ts === best.depart_ts;
-      h += `<div class="depb ${isBest ? 'best' : ''} ${w === j.windows[0] ? 'now' : ''}"
+      h += `<div class="depb ${isBest ? 'best' : ''} ${w === j.windows[0] ? 'now' : ''}" data-idx="${idx}"
         style="height:${hgt}px;background:${isBest ? '' : sevColor(w.max_risk, w.n_blocked ? 2 : 0)}"
         title="${w.depart_ts.slice(5, 16).replace('T', ' ')} → ${fmt(w.eta_hours, 1)} h, peak risk ${fmt(w.max_risk, 2)}"></div>`;
     });
     h += `</div><div class="depax"><span>now</span><span>+36 h</span><span>+72 h</span></div>
       <div class="muted" style="margin-top:6px">Bar height = predicted transit
-      hours. Colour = peak segment risk. Green = best window.</div>`;
+      hours. Colour = peak segment risk. Green = best window. Click bar for details.</div>`;
 
     h += `<div class="sect">Windows</div><table class="t">
       <tr><th>Depart</th><th>Transit</th><th>Peak risk</th><th>Blk</th></tr>`;
-    j.windows.forEach(w => {
+    j.windows.forEach((w, idx) => {
       if (!w.feasible) return;
       const isBest = best && w.depart_ts === best.depart_ts;
-      h += `<tr style="${isBest ? 'background:rgba(45,212,167,.08)' : ''}">
+      h += `<tr class="deptr" data-idx="${idx}" style="${isBest ? 'background:rgba(45,212,167,.08)' : ''}">
         <td class="mono">${esc(w.depart_ts.slice(5, 16).replace('T', ' '))}${isBest ? ' ★' : ''}</td>
         <td class="num">${fmt(w.eta_hours, 1)} h</td>
         <td class="num" style="color:${sevColor(w.max_risk, 0)}">${fmt(w.max_risk, 2)}</td>
@@ -975,6 +1055,27 @@ async function departureSweep() {
       crew. This is the one screen that turns a risk model into a dispatch
       decision.</div>`;
     setRight('Departure optimiser', h);
+
+    setTimeout(() => {
+      $$('#right .depb').forEach(b => {
+        b.onclick = () => {
+          const idx = +b.dataset.idx;
+          const w = j.windows[idx];
+          if (w && w.feasible) {
+            banner(`Window ${w.depart_ts.slice(5, 16).replace('T', ' ')}: ETA ${fmt(w.eta_hours, 1)} h, Peak risk ${fmt(w.max_risk, 2)}`, 'info', 3500);
+          }
+        };
+      });
+      $$('#right .deptr').forEach(tr => {
+        tr.onclick = () => {
+          const idx = +tr.dataset.idx;
+          const w = j.windows[idx];
+          if (w && w.feasible) {
+            banner(`Selected Window: ${w.depart_ts.slice(5, 16).replace('T', ' ')} · ${fmt(w.eta_hours, 1)} h`, 'info', 3000);
+          }
+        };
+      });
+    }, 0);
   } catch (e) {
     setRight('Departure optimiser', `<div class="note crit">${esc(e.message)}</div>`);
   }
@@ -1109,12 +1210,24 @@ function renderAcc() {
   a.by_state.forEach(s => {
     const g = s.mean_index >= 80 ? 'A' : s.mean_index >= 65 ? 'B'
             : s.mean_index >= 50 ? 'C' : s.mean_index >= 35 ? 'D' : 'E';
-    h += `<tr><td>${esc(s.state_name)}</td>
+    h += `<tr class="staterow" data-state="${esc(s.state)}" title="Click to zoom to ${esc(s.state_name)}"><td>${esc(s.state_name)}</td>
       <td class="num"><span class="gr ${g}">${g}</span> ${fmt(s.mean_index, 1)}</td>
       <td class="num">${s.districts}</td></tr>`;
   });
   h += `</table>`;
   $('#accstate').innerHTML = h;
+  $$('#accstate tr[data-state]').forEach(tr => {
+    tr.onclick = () => {
+      const st = tr.dataset.state;
+      const nodes = S.nodes.filter(n => n.state === st);
+      if (nodes.length) {
+        const clat = nodes.reduce((a, b) => a + b.lat, 0) / nodes.length;
+        const clon = nodes.reduce((a, b) => a + b.lon, 0) / nodes.length;
+        zoomTo(clat, clon, 3.4);
+        banner(`Zoomed to ${tr.querySelector('td')?.textContent || st}`, 'info', 2000);
+      }
+    };
+  });
 
   let t = `<table class="t"><tr><th>District</th><th>Index</th><th>From hub</th><th>Routes</th></tr>`;
   a.most_vulnerable.forEach(d => {
@@ -1253,8 +1366,6 @@ function startStream() {
       const crit = d.new_alerts.find(a => a.severity === 'critical');
       if (crit) banner(crit.message, '', 7000);
     }
-    $('#clk').textContent = d.sim_time.slice(11, 16);
-    $('#clkd').textContent = new Date(d.sim_time).toDateString().slice(0, 11) + ' · sim';
     drawFleet(); renderFleet(d.summary);
   });
   es.onerror = () => { $('#livelbl').textContent = 'reconnecting'; };
@@ -1438,13 +1549,44 @@ async function refreshNetwork() {
   S.heat = heat;
   renderNetStat(); renderHotspots();
   drawSegments(); drawHeat(); if (S.layers.acc) drawAcc();
-  if (!S.overrides) {
-    $('#clk').textContent = net.ts.slice(11, 16);
-    $('#clkd').textContent = new Date(net.ts).toDateString().slice(0, 11);
+}
+
+function startClock() {
+  function tick() {
+    const now = new Date();
+    try {
+      const timeStr = now.toLocaleTimeString('en-US', {
+        timeZone: 'Asia/Kolkata',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hour12: true
+      });
+      const dateStr = now.toLocaleDateString('en-IN', {
+        timeZone: 'Asia/Kolkata',
+        weekday: 'short',
+        day: '2-digit',
+        month: 'short',
+        year: 'numeric'
+      }) + ' · IST';
+
+      const clk = $('#clk');
+      const clkd = $('#clkd');
+      if (clk) clk.textContent = timeStr;
+      if (clkd) clkd.textContent = dateStr;
+    } catch (_) {
+      const clk = $('#clk');
+      const clkd = $('#clkd');
+      if (clk) clk.textContent = now.toLocaleTimeString('en-US', { hour12: true });
+      if (clkd) clkd.textContent = now.toDateString() + ' · IST';
+    }
   }
+  tick();
+  setInterval(tick, 1000);
 }
 
 async function boot() {
+  startClock();
   MAP.init();
 
   const nodes = await api('/nodes');
@@ -1506,9 +1648,12 @@ $$('#critmode .chip').forEach(c => c.onclick = () => {
   renderCrit();
 });
 $('#goroute').onclick    = planRoute;
+$('#clearroute').onclick = cancelPrediction;
+$('#swapcities').onclick = swapCities;
 $('#gocompare').onclick  = compareProfiles;
 $('#godep').onclick      = departureSweep;
 $('#lang').onchange      = e => { S.lang = e.target.value; renderAlerts(); };
+$('#banner').onclick     = () => $('#banner').className = '';
 
 const LMAP = { L_seg: 'seg', L_heat: 'heat', L_crit: 'crit', L_acc: 'acc',
   L_fleet: 'fleet', L_inc: 'inc', L_lbl: 'lbl', L_hull: 'hull' };
@@ -1557,9 +1702,14 @@ $('#fleettoggle').onclick = e => {
   e.target.textContent = S.fleetPaused ? 'Resume stream' : 'Pause stream';
 };
 $('#fleetreset').onclick = async () => {
-  await fetch('/api/fleet/reset', { method: 'POST' });
-  S.fleet = {}; S.fleetAlerts = [];
-  banner('Fleet re-planned on the current network', 'info', 3000);
+  try {
+    const res = await fetch('/api/fleet/reset', { method: 'POST' });
+    if (!res.ok) throw new Error('HTTP ' + res.status);
+    S.fleet = {}; S.fleetAlerts = [];
+    banner('Fleet re-planned on the current network', 'info', 3000);
+  } catch (e) {
+    banner('Fleet reset error: ' + e.message, 'warn', 4000);
+  }
 };
 
 $('#map').addEventListener('click', e => {
