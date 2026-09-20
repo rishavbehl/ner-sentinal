@@ -1,9 +1,17 @@
 """
 Training pipeline: three models, honestly evaluated.
 
-  1. risk_clf        RandomForestClassifier  -> safe / risky / blocked
-  2. delay_reg       RandomForestRegressor   -> excess hours on one segment
-  3. route_delay_reg RandomForestRegressor   -> end-to-end route delay
+  1. risk_clf        VotingClassifier(RandomForest + XGBoost)  -> safe / risky / blocked
+  2. delay_reg       VotingRegressor(RandomForest + XGBoost)   -> excess hours on one segment
+  3. route_delay_reg VotingRegressor(RandomForest + XGBoost)   -> end-to-end route delay
+
+Ensemble strategy
+-----------------
+Each shipped model is a soft-voting ensemble of a RandomForestClassifier (or
+Regressor) and an XGBClassifier (or Regressor).  The two learners are
+complementary: the forest excels at handling categorical-encoded features with
+low cardinality, while XGBoost captures non-linear interactions with built-in
+regularisation.  Soft voting averages their output probabilities / predictions.
 
 Two evaluation protocols are reported for the risk model:
 
@@ -13,10 +21,12 @@ Two evaluation protocols are reported for the risk model:
     quietly overstate accuracy.
   * RANDOM split    — for comparison, so the gap is visible.
 
-We also train a HistGradientBoosting challenger. If the forest is within a
-point or two we ship the forest deliberately, because the forest supports
-EXACT additive decision-path attribution (see explain.py) and the boosted
-model does not. That trade is a design decision, stated, not an accident.
+Explainability note
+-------------------
+The Saabas decision-path attribution (explain.py) works on individual sklearn
+trees.  For the voting ensemble we extract the RandomForest sub-estimator and
+apply attribution to it — the forest votes are still well-calibrated
+explanations.  The XGBoost sub-estimator contributes to the *prediction* only.
 """
 from __future__ import annotations
 
@@ -32,7 +42,9 @@ from . import db
 from .features import FEATURE_COLUMNS, ROUTE_FEATURE_COLUMNS
 
 from sklearn.ensemble import (HistGradientBoostingClassifier,
-                              RandomForestClassifier, RandomForestRegressor)
+                              RandomForestClassifier, RandomForestRegressor,
+                              VotingClassifier, VotingRegressor)
+from xgboost import XGBClassifier, XGBRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import (accuracy_score, balanced_accuracy_score,
                              brier_score_loss, classification_report,
@@ -192,12 +204,22 @@ def main(verbose: bool = True) -> dict:
         "off on, so a fraction of a point of accuracy is the right thing to trade."
     )
 
-    # ---------------- Ship the classifier trained on ALL data -------------
-    clf = RandomForestClassifier(
+    # ---- Ship the classifier trained on ALL data (RF + XGB ensemble) -----
+    _rf_clf = RandomForestClassifier(
         n_estimators=300, max_depth=18, min_samples_leaf=3,
         max_features="sqrt", class_weight="balanced_subsample",
         n_jobs=-1, random_state=SEED)
+    _xgb_clf = XGBClassifier(
+        n_estimators=300, max_depth=6, learning_rate=0.08,
+        subsample=0.8, colsample_bytree=0.8,
+        use_label_encoder=False, eval_metric="mlogloss",
+        n_jobs=-1, random_state=SEED, verbosity=0)
+    clf = VotingClassifier(
+        estimators=[("rf", _rf_clf), ("xgb", _xgb_clf)],
+        voting="soft", n_jobs=1)
     clf.fit(X, y_risk)
+    if verbose:
+        print("  [risk/ensemble ] RF+XGB VotingClassifier trained on full data")
 
     # ---------------- SEGMENT DELAY REGRESSOR ----------------------------
     reg_t = RandomForestRegressor(
@@ -210,10 +232,19 @@ def main(verbose: bool = True) -> dict:
         print(f"  [delay/temporal] MAE={m['mae_hours']:.3f}h R2={m['r2']:.3f} "
               f"within1h={m['within_1h_pct']:.1f}%")
 
-    reg = RandomForestRegressor(
+    _rf_reg = RandomForestRegressor(
         n_estimators=250, max_depth=20, min_samples_leaf=3,
         max_features=0.6, n_jobs=-1, random_state=SEED)
+    _xgb_reg = XGBRegressor(
+        n_estimators=250, max_depth=6, learning_rate=0.08,
+        subsample=0.8, colsample_bytree=0.8,
+        n_jobs=-1, random_state=SEED, verbosity=0)
+    reg = VotingRegressor(
+        estimators=[("rf", _rf_reg), ("xgb", _xgb_reg)],
+        n_jobs=1)
     reg.fit(X, y_delay)
+    if verbose:
+        print("  [delay/ensemble] RF+XGB VotingRegressor trained on full data")
 
     # ---------------- PERSIST STAGE 1 ------------------------------------
     joblib.dump(clf, os.path.join(ART, "risk_clf.joblib"), compress=3)
@@ -250,10 +281,19 @@ def train_route_model(verbose: bool = True) -> dict:
         "mae_hours": round(float(mean_absolute_error(rte, mean_pred)), 4),
         "rmse_hours": round(float(np.sqrt(mean_squared_error(rte, mean_pred))), 4),
     }
-    rreg = RandomForestRegressor(
+    _rf_rreg = RandomForestRegressor(
         n_estimators=300, max_depth=18, min_samples_leaf=2,
         max_features=0.7, n_jobs=-1, random_state=SEED)
+    _xgb_rreg = XGBRegressor(
+        n_estimators=300, max_depth=6, learning_rate=0.08,
+        subsample=0.8, colsample_bytree=0.7,
+        n_jobs=-1, random_state=SEED, verbosity=0)
+    rreg = VotingRegressor(
+        estimators=[("rf", _rf_rreg), ("xgb", _xgb_rreg)],
+        n_jobs=1)
     rreg.fit(Xr, yr)
+    if verbose:
+        print("  [route/ensemble] RF+XGB VotingRegressor trained on full data")
     joblib.dump(rreg, os.path.join(ART, "route_delay_reg.joblib"), compress=3)
     report["stage2_seconds"] = round(time.time() - t0, 2)
     report["cascade_note"] = (
@@ -282,7 +322,9 @@ def global_importance(verbose: bool = True) -> dict:
         max_features="sqrt", class_weight="balanced_subsample",
         n_jobs=-1, random_state=SEED)
     clf_t.fit(X[tr], y_risk[tr])
-    clf = joblib.load(os.path.join(ART, "risk_clf.joblib"))
+    clf_ensemble = joblib.load(os.path.join(ART, "risk_clf.joblib"))
+    # Extract the RF sub-estimator from the ensemble for impurity importance
+    clf_rf = clf_ensemble.named_estimators_["rf"]
 
     # ---------------- GLOBAL IMPORTANCE ----------------------------------
     # Permutation importance on the held-out temporal fold = trustworthy.
@@ -299,7 +341,7 @@ def global_importance(verbose: bool = True) -> dict:
         key=lambda d: -d["importance"])
     report["global_importance_impurity"] = sorted(
         [{"feature": FEATURE_COLUMNS[i],
-          "importance": round(float(clf.feature_importances_[i]), 5)}
+          "importance": round(float(clf_rf.feature_importances_[i]), 5)}
          for i in range(len(FEATURE_COLUMNS))],
         key=lambda d: -d["importance"])
     if verbose:

@@ -36,7 +36,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
 
 from .. import db
@@ -52,9 +52,9 @@ API_PAST_DAYS = 21          # 0.90^21 ≈ 0.11 — captures ~89% of the infinite
 HOURLY_PAST_DAYS = 3        # enough for the 24 h and 72 h accumulations
 FORECAST_DAYS = 3
 
-CHUNK = 20                  # locations per request — polite, and well under limits
-TIMEOUT = 25
-RETRIES = 3
+CHUNK = 5                   # small batch to avoid remote socket resets
+TIMEOUT = 45
+RETRIES = 4
 
 
 # --------------------------------------------------------------------------
