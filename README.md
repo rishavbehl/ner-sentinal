@@ -5,6 +5,7 @@
 ### *AI Route-Risk & Accessibility Intelligence for the North Eastern Region*
 
 [![Python](https://img.shields.io/badge/Python-3.11+-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://www.python.org/)
+[![XGBoost](https://img.shields.io/badge/XGBoost-2.0+-EB5424?style=for-the-badge&logo=xgboost&logoColor=white)](https://xgboost.readthedocs.io/)
 [![Scikit-Learn](https://img.shields.io/badge/scikit--learn-1.3+-F7931E?style=for-the-badge&logo=scikit-learn&logoColor=white)](https://scikit-learn.org/)
 [![FastAPI](https://img.shields.io/badge/FastAPI-0.110+-009688?style=for-the-badge&logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
 [![Swagger UI](https://img.shields.io/badge/Swagger-UI_Docs-85EA2D?style=for-the-badge&logo=swagger&logoColor=black)](http://localhost:8000/docs)
@@ -13,8 +14,9 @@
 [![Pandas](https://img.shields.io/badge/Pandas-2.0+-150458?style=for-the-badge&logo=pandas&logoColor=white)](https://pandas.pydata.org/)
 [![SQLite](https://img.shields.io/badge/SQLite-WAL-003B57?style=for-the-badge&logo=sqlite&logoColor=white)](https://www.sqlite.org/)
 
-[![AUC](https://img.shields.io/badge/AUC-0.954-success?style=for-the-badge)](https://github.com/rishavbehl/ner-sentinal)
-[![Blocked Recall](https://img.shields.io/badge/Blocked_Recall-87.2%25-brightgreen?style=for-the-badge)](https://github.com/rishavbehl/ner-sentinal)
+[![AUC](https://img.shields.io/badge/AUC-0.957-success?style=for-the-badge)](https://github.com/rishavbehl/ner-sentinal)
+[![Blocked Recall](https://img.shields.io/badge/Blocked_Recall-85.1%25-brightgreen?style=for-the-badge)](https://github.com/rishavbehl/ner-sentinal)
+[![Observations](https://img.shields.io/badge/Dataset-107K+_Observations-blue?style=for-the-badge)](DATASETS.md)
 [![License](https://img.shields.io/badge/License-MIT-yellow?style=for-the-badge)](LICENSE)
 
 <br/>
@@ -34,10 +36,10 @@
 Across eight states and forty-five million people, vital logistics hang on a vulnerable, high-gradient mountain road network. When a slope fails along NH-10 or NH-306, entire states face supply-chain severance. Sentinel predicts segment disruption, models cascaded delivery delays, recommends risk-weighted alternate corridors, and mathematically identifies **the single roads upon which the entire region depends**.
 
 ### 💡 Core Highlights
-- **Zero External Runtime Dependencies:** Runs 100% offline with zero external CDNs, zero cloud map tiles, and zero external database servers — ideal for field operations during severe network disruptions.
+- **XGBoost + Random Forest Ensemble:** Hybrid soft-voting architecture combining `RandomForest` stability on categorical terrain/road encodings with `XGBoost` gradient boosting for non-linear precipitation and soil-saturation interactions.
 - **Explainable AI (XAI):** Exact, additive decision-tree path decomposition (Saabas attribution) delivering mathematically verified operational explanations ($\Delta < 10^{-12}$) for every risk prediction.
-- **Two-Stage Cascaded ML:** Predicts segment hazards with calibrated probabilities and models end-to-end route delay accounting for queue cascades and checkpost dwell times.
-- **Dual Telemetry Mode:** Instant offline simulation mode with regional climatological modeling, plus keyless **Live Open-Meteo Weather** and **Real Mobile/AIS-140 GPS tracking**.
+- **Annual Climatology Dataset (107k+ Samples):** Trained on a comprehensive 365-day annual timeline spanning pre-monsoon, peak monsoon, post-monsoon, and winter freeze/snow regimes across 98 highway corridors.
+- **Dual Telemetry Mode:** Zero-dependency offline simulation mode with regional climatological modeling, plus keyless **Live Open-Meteo Weather (ECMWF & GPM)** enabled by default and **Real Mobile/AIS-140 GPS tracking**.
 
 ---
 
@@ -47,7 +49,8 @@ Across eight states and forty-five million people, vital logistics hang on a vul
 | Technology | Version | Purpose & Implementation |
 |---|---|---|
 | **Python** | `3.11+` | Core asynchronous runtime environment |
-| **scikit-learn** | `>=1.3` | **Model 1**: Class-weighted `RandomForestClassifier` predicting segment status (`safe`, `risky`, `blocked`)<br/>**Model 2**: `RandomForestRegressor` estimating segment excess delay hours<br/>**Model 3**: Cascaded `RandomForestRegressor` modeling end-to-end route delay interactions<br/>**Validation**: `TimeSeriesSplit` temporal evaluation, Brier score calibration, ROC-AUC (`0.954`) |
+| **XGBoost** | `>=2.0` | **Model 1**: `XGBClassifier` with `multi:softprob` and cross-entropy loss for non-linear rainfall burst and soil-moisture interactions.<br/>**Models 2 & 3**: `XGBRegressor` with tree gradient boosting for segment and multi-segment cascade route delay. |
+| **scikit-learn** | `>=1.3` | **Ensemble Core**: `VotingClassifier(rf, xgb, voting="soft")` and `VotingRegressor(rf, xgb)` across all 3 models.<br/>**Sub-Estimators**: Class-weighted `RandomForestClassifier` and `RandomForestRegressor`.<br/>**Validation**: `TimeSeriesSplit` temporal evaluation, Brier score calibration, ROC-AUC (`0.957`). |
 | **pandas** | `>=2.0` | Vectorized geospatial dataset construction, rolling feature generation, temporal slicing |
 | **NumPy** | `>=1.24` | Matrix computations, antecedent soil moisture decay modeling, mathematical array pipelines |
 | **SciPy** | `>=1.10` | Climatological hazard modeling, gamma-tailed cloudburst distributions, wet-spell autocorrelation |
@@ -143,23 +146,23 @@ Across eight states and forty-five million people, vital logistics hang on a vul
 ---
 
 ## 📊 Model Performance
+ 
+ Evaluated on a **temporal split** (trained on initial 80% chronological timeline, validated on held-out 20% future events across 107,506 segment observations).
+ 
+ | Model | Metric | Temporal Split (Production) | Random Split (Optimistic) |
+ |---|---|---|---|
+ | **Risk Ensemble**<br/>*(RF + XGBoost)* | **Accuracy** | **82.7%** | 93.8% |
+ | | **Macro F1** | **0.829** | 0.886 |
+ | | **Recall on `blocked`** | **85.1%** | 88.4% |
+ | | **ROC-AUC (Disruption)** | **0.957** | — |
+ | **Segment Delay**<br/>*(RF + XGBoost)* | **Mean Absolute Error (MAE)** | **1.31 hours** | — |
+ | | **$R^2$ Score** | **0.836** | — |
+ | | **Within 1 hour %** | **69.9%** | — |
+ | **Route Delay**<br/>*(Cascade Ensemble)* | **Route MAE** | **2.92 hours** | — |
+ | | **$R^2$ Score** | **0.954** | — |
+ 
+ > **Physics Discovery:** Permutation importance ranks **`api_7d` (7-day antecedent precipitation index)**, **`days_since_last_incident`**, and **`flood_exposure`** as the dominant failure drivers. The model independently recovered the geomorphic law of Himalayan slope failure: slopes fail when moderate bursts strike ground saturated by the previous week.
 
-Evaluated on a **temporal split** (trained on initial 80% chronological timeline, validated on held-out 20% future events).
-
-| Model | Metric | Temporal Split (Production) | Random Split (Optimistic) |
-|---|---|---|---|
-| **Risk Classifier** | **Accuracy** | **82.5%** | 89.6% |
-| | **Macro F1** | **0.829** | 0.882 |
-| | **Balanced Accuracy** | **0.843** | — |
-| | **Recall on `blocked`** | **87.2%** | 88.1% |
-| | **ROC-AUC (Disruption)** | **0.954** | — |
-| | **Brier Calibration Score** | **0.100** | — |
-| **Segment Delay** | **Mean Absolute Error (MAE)** | **0.98 hours** | — |
-| | **$R^2$ Score** | **0.833** | — |
-| **Route Delay** | **Route MAE** | **5.05 hours** | — |
-| | **$R^2$ Score** | **0.952** | — |
-
-> **Physics Discovery:** Permutation importance ranks **`api_7d` (7-day antecedent precipitation index)** as the single strongest failure driver. The model independently recovered the geomorphic law of Himalayan slope failure: slopes fail because today's rainfall falls on ground already saturated by the previous week.
 
 ---
 
@@ -254,9 +257,8 @@ chmod +x run.sh
 
 ### ⚡ Runtime Options
 
-| Flag | Windows Batch | Windows PowerShell | Bash | Description |
-|---|---|---|---|---|
-| **Live Weather** | `run.bat --live` | `.\run.ps1 -Live` | `./run.sh --live` | Ingests real-time weather & 72h forecasts via Open-Meteo |
+| **Live Weather** | `run.bat --live` | `.\run.ps1 -Live` | `./run.sh --live` | Live Open-Meteo satellite feed (enabled by default; automatic offline fallback) |
+| **Offline Mode** | `SENTINEL_LIVE_WEATHER=0` | `$env:SENTINEL_LIVE_WEATHER=0` | `SENTINEL_LIVE_WEATHER=0` | Forces pure offline climatology mode |
 | **HTTPS (GPS)** | `run.bat --https` | `.\run.ps1 -Https` | `./run.sh --https` | Enables TLS on `:8443` (mandatory for phone browser GPS) |
 | **Quiet Fleet** | `run.bat --no-sim-fleet` | `.\run.ps1 -NoSimFleet` | `./run.sh --no-sim-fleet` | Disables background simulated convoy telemetry |
 
