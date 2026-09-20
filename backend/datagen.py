@@ -39,7 +39,7 @@ from .geography import (CORRIDORS, NODES, Segment, build_segments, district_list
 RNG = np.random.default_rng(20260911)
 random.seed(20260911)
 
-HISTORY_DAYS = 150
+HISTORY_DAYS = 365
 SNAPSHOT_HOURS = (6, 15, 21)        # observation snapshots used for TRAINING
 WEATHER_HOURS = (0, 3, 6, 9, 12, 15, 18, 21)   # 3-hourly weather grid
 FORECAST_HOURS = 78                 # forward window for the departure optimiser
@@ -354,7 +354,6 @@ def _dominant_channel(seg: Segment, wx: dict, ctx: dict) -> str:
 def build_all(verbose: bool = True) -> dict:
     db.init_db()
     segs = build_segments()
-    seg_by_id = {s.road_id: s for s in segs}
 
     now = datetime(2026, 9, 11, 15, 0, 0)         # "now" for the demo
     start = (now - timedelta(days=HISTORY_DAYS)).replace(hour=0, minute=0, second=0,
@@ -506,7 +505,7 @@ def build_all(verbose: bool = True) -> dict:
 #    sections effectively close at night. We encode that, so the route model
 #    learns something a naive sum cannot give.
 # --------------------------------------------------------------------------
-def generate_route_samples(n_samples: int = 4500, verbose: bool = True) -> int:
+def generate_route_samples(n_samples: int = 8000, verbose: bool = True) -> int:
     """
     Stage-2 training set.
 
@@ -576,7 +575,6 @@ def generate_route_samples(n_samples: int = 4500, verbose: bool = True) -> int:
         plabels = [p["pred_label"] for _r, _t, p, _w in recs]
         n_risky = sum(1 for x in plabels if x == 1)
         n_blocked = sum(1 for x in plabels if x == 2)
-        n_disr = sum(1 for _r, t, _p, _w in recs if t["risk_label"] == 2 and False)
         frac_hilly = sum(1 for r, _t, _p, _w in recs
                          if r["terrain"] in ("hilly", "high_pass")) / len(recs)
         frac_nh = sum(1 for r, _t, _p, _w in recs

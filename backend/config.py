@@ -30,7 +30,7 @@ def _int(name: str, default: int) -> int:
         return default
 
 
-LIVE_WEATHER = _flag("SENTINEL_LIVE_WEATHER", False)
+LIVE_WEATHER = _flag("SENTINEL_LIVE_WEATHER", True)
 WEATHER_INTERVAL_MIN = max(5, _int("SENTINEL_WEATHER_INTERVAL", 30))
 LIVE_GPS = _flag("SENTINEL_LIVE_GPS", True)
 SIM_FLEET = _flag("SENTINEL_SIM_FLEET", True)

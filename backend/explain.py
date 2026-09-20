@@ -59,11 +59,31 @@ def _tree_contributions(est, x: np.ndarray, n_features: int, n_out: int
     return bias, contrib
 
 
+def _get_forest_estimator(model):
+    """Return the underlying RandomForest from a VotingClassifier/VotingRegressor.
+
+    If the model *is* already a RandomForest (or any sklearn ensemble with
+    ``estimators_`` of decision trees), it is returned as-is.  When a
+    VotingClassifier/VotingRegressor is passed the named sub-estimator 'rf'
+    is extracted so that the Saabas decision-path method works correctly.
+    """
+    # VotingClassifier / VotingRegressor expose named_estimators_
+    if hasattr(model, "named_estimators_"):
+        return model.named_estimators_["rf"]
+    return model
+
+
 def forest_contributions(model, x: np.ndarray, n_out: int
                          ) -> Tuple[np.ndarray, np.ndarray]:
-    """Average exact per-tree attributions over the ensemble."""
+    """Average exact per-tree attributions over the RandomForest sub-model.
+
+    When *model* is a VotingClassifier/VotingRegressor ensemble the RF
+    sub-estimator is extracted for attribution; the XGBoost member contributes
+    to the *prediction* only (via the ensemble's predict/predict_proba).
+    """
+    forest = _get_forest_estimator(model)
     n_features = x.shape[0]
-    ests = model.estimators_
+    ests = forest.estimators_
     bias = np.zeros(n_out, dtype=np.float64)
     contrib = np.zeros((n_features, n_out), dtype=np.float64)
     for est in ests:
@@ -163,17 +183,27 @@ def narrate(col: str, raw_value: float, signed_contrib: float) -> str:
 
 
 def explain_segment_risk(model, x: np.ndarray, top_k: int = 6) -> dict:
-    """Exact attribution for the 3-class risk model, rendered for the UI."""
+    """Exact attribution for the 3-class risk model, rendered for the UI.
+
+    The additivity identity (bias + sum(contributions) == output) is verified
+    against the RandomForest sub-model's output, because that is the model
+    whose decision paths are being traced.  The ensemble probability shown to
+    operators is the RF+XGBoost averaged prediction.
+    """
+    forest = _get_forest_estimator(model)
     n_classes = len(model.classes_)
     bias, contrib = forest_contributions(model, x, n_classes)
+    # Ensemble probabilities — what the operator sees
     proba = model.predict_proba(x.reshape(1, -1))[0]
+    # RF sub-model probabilities — used for the additivity proof
+    rf_proba = forest.predict_proba(x.reshape(1, -1))[0]
     pred = int(np.argmax(proba))
 
-    # We explain the probability of the *predicted* class, and additionally the
-    # probability of failure (risky + blocked) which is what operators care about.
+    # We explain the probability of failure (risky + blocked) — what operators care about.
     fail_contrib = contrib[:, 1] + contrib[:, 2] if n_classes >= 3 else contrib[:, -1]
     fail_bias = float(bias[1] + bias[2]) if n_classes >= 3 else float(bias[-1])
     fail_prob = float(proba[1] + proba[2]) if n_classes >= 3 else float(proba[-1])
+    rf_fail_prob = float(rf_proba[1] + rf_proba[2]) if n_classes >= 3 else float(rf_proba[-1])
 
     order = np.argsort(-np.abs(fail_contrib))
     drivers: List[dict] = []
@@ -199,7 +229,7 @@ def explain_segment_risk(model, x: np.ndarray, top_k: int = 6) -> dict:
     recon = fail_bias + float(fail_contrib.sum())
     return {
         "method": "exact additive decision-path attribution (Saabas) over "
-                  "RandomForest ensemble",
+                  "RandomForest sub-model; prediction from RF+XGBoost ensemble",
         "predicted_class": pred,
         "class_probabilities": [round(float(p), 4) for p in proba],
         "failure_probability": round(fail_prob, 4),
@@ -207,17 +237,21 @@ def explain_segment_risk(model, x: np.ndarray, top_k: int = 6) -> dict:
         "drivers": drivers,
         "additivity_check": {
             "baseline_plus_contributions": round(recon, 8),
-            "model_output": round(fail_prob, 8),
-            "abs_error": round(abs(recon - fail_prob), 12),
-            "exact": bool(abs(recon - fail_prob) < 1e-6),
+            # Verified against RF sub-model (attribution source), not the full ensemble
+            "model_output": round(rf_fail_prob, 8),
+            "abs_error": round(abs(recon - rf_fail_prob), 12),
+            "exact": bool(abs(recon - rf_fail_prob) < 1e-6),
         },
     }
 
 
+
 def explain_delay(model, x: np.ndarray, top_k: int = 5) -> dict:
     """Attribution for the regression head (hours of delay)."""
+    forest = _get_forest_estimator(model)
     bias, contrib = forest_contributions(model, x, 1)
-    pred = float(model.predict(x.reshape(1, -1))[0])
+    pred = float(model.predict(x.reshape(1, -1))[0])        # ensemble prediction
+    rf_pred = float(forest.predict(x.reshape(1, -1))[0])   # RF-only, for additivity
     c = contrib[:, 0]
     order = np.argsort(-np.abs(c))
     drivers = []
@@ -237,15 +271,18 @@ def explain_delay(model, x: np.ndarray, top_k: int = 5) -> dict:
         "baseline_hours": round(float(bias[0]), 3),
         "drivers": drivers,
         "additivity_check": {
-            "abs_error": round(abs(recon - pred), 12),
-            "exact": bool(abs(recon - pred) < 1e-6),
+            "abs_error": round(abs(recon - rf_pred), 12),
+            "exact": bool(abs(recon - rf_pred) < 1e-6),
         },
     }
 
 
+
 def explain_route_delay(model, rx: np.ndarray, top_k: int = 6) -> dict:
+    forest = _get_forest_estimator(model)
     bias, contrib = forest_contributions(model, rx, 1)
-    pred = float(model.predict(rx.reshape(1, -1))[0])
+    pred = float(model.predict(rx.reshape(1, -1))[0])        # ensemble prediction
+    rf_pred = float(forest.predict(rx.reshape(1, -1))[0])   # RF-only, for additivity
     c = contrib[:, 0]
     order = np.argsort(-np.abs(c))
     drivers = []
@@ -266,7 +303,8 @@ def explain_route_delay(model, rx: np.ndarray, top_k: int = 6) -> dict:
         "baseline_hours": round(float(bias[0]), 3),
         "drivers": drivers,
         "additivity_check": {
-            "abs_error": round(abs(recon - pred), 12),
-            "exact": bool(abs(recon - pred) < 1e-6),
+            "abs_error": round(abs(recon - rf_pred), 12),
+            "exact": bool(abs(recon - rf_pred) < 1e-6),
         },
     }
+
