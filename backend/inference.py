@@ -46,12 +46,35 @@ def models() -> Dict[str, object]:
     with _LOCK:
         if _MODELS:
             return _MODELS
-        _MODELS = {
-            "risk": joblib.load(os.path.join(db.ARTIFACT_DIR, "risk_clf.joblib")),
-            "delay": joblib.load(os.path.join(db.ARTIFACT_DIR, "delay_reg.joblib")),
-            "route_delay": joblib.load(
-                os.path.join(db.ARTIFACT_DIR, "route_delay_reg.joblib")),
-        }
+
+        use_nn = config.MODEL_BACKEND in ("nn", "neural", "deep")
+        loaded_nn = False
+
+        if use_nn:
+            try:
+                from .nn_wrappers import (NeuralRiskEnsemble, NeuralDelayEnsemble,
+                                          NeuralRouteEnsemble)
+                risk_ens = NeuralRiskEnsemble(db.ARTIFACT_DIR)
+                delay_ens = NeuralDelayEnsemble(risk_ens, db.ARTIFACT_DIR)
+                route_ens = NeuralRouteEnsemble(db.ARTIFACT_DIR)
+                _MODELS = {
+                    "risk": risk_ens,
+                    "delay": delay_ens,
+                    "route_delay": route_ens,
+                    "backend": "neural_core_onnx",
+                }
+                loaded_nn = True
+            except Exception as e:
+                print(f"[inference] Neural core load failed ({e}), falling back to tree ensemble")
+
+        if not loaded_nn:
+            _MODELS = {
+                "risk": joblib.load(os.path.join(db.ARTIFACT_DIR, "risk_clf.joblib")),
+                "delay": joblib.load(os.path.join(db.ARTIFACT_DIR, "delay_reg.joblib")),
+                "route_delay": joblib.load(
+                    os.path.join(db.ARTIFACT_DIR, "route_delay_reg.joblib")),
+                "backend": "tree_ensemble",
+            }
     return _MODELS
 
 

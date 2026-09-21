@@ -30,7 +30,6 @@ Run the self-test on a machine with internet:
 from __future__ import annotations
 
 import json
-import math
 import sys
 import time
 import urllib.error

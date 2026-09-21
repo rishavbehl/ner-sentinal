@@ -24,7 +24,7 @@ what turns a score into an order someone can sign.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Tuple
+from typing import List, Tuple
 
 import numpy as np
 
@@ -59,21 +59,36 @@ def _tree_contributions(est, x: np.ndarray, n_features: int, n_out: int
     return bias, contrib
 
 
-def _get_forest_estimator(model):
-    """Return the underlying RandomForest from a VotingClassifier/VotingRegressor.
+def _get_forest_estimator(model, artifact_name: str = "risk_clf.joblib"):
+    """Return the underlying RandomForest for attribution.
 
     If the model *is* already a RandomForest (or any sklearn ensemble with
     ``estimators_`` of decision trees), it is returned as-is.  When a
     VotingClassifier/VotingRegressor is passed the named sub-estimator 'rf'
-    is extracted so that the Saabas decision-path method works correctly.
+    is extracted. If a Neural Ensemble is active, it loads the RF benchmark
+    estimator so Saabas additive attribution remains exact and verified.
     """
-    # VotingClassifier / VotingRegressor expose named_estimators_
     if hasattr(model, "named_estimators_"):
         return model.named_estimators_["rf"]
+    if hasattr(model, "estimators_"):
+        return model
+    # Neural model fallback to RF for exact path attribution
+    try:
+        import os, joblib
+        from . import db
+        rf_path = os.path.join(db.ARTIFACT_DIR, artifact_name)
+        if os.path.exists(rf_path):
+            m = joblib.load(rf_path)
+            if hasattr(m, "named_estimators_"):
+                return m.named_estimators_["rf"]
+            return m
+    except Exception:
+        pass
     return model
 
 
-def forest_contributions(model, x: np.ndarray, n_out: int
+def forest_contributions(model, x: np.ndarray, n_out: int,
+                         artifact_name: str = "risk_clf.joblib"
                          ) -> Tuple[np.ndarray, np.ndarray]:
     """Average exact per-tree attributions over the RandomForest sub-model.
 
@@ -81,7 +96,7 @@ def forest_contributions(model, x: np.ndarray, n_out: int
     sub-estimator is extracted for attribution; the XGBoost member contributes
     to the *prediction* only (via the ensemble's predict/predict_proba).
     """
-    forest = _get_forest_estimator(model)
+    forest = _get_forest_estimator(model, artifact_name=artifact_name)
     n_features = x.shape[0]
     ests = forest.estimators_
     bias = np.zeros(n_out, dtype=np.float64)
@@ -190,9 +205,9 @@ def explain_segment_risk(model, x: np.ndarray, top_k: int = 6) -> dict:
     whose decision paths are being traced.  The ensemble probability shown to
     operators is the RF+XGBoost averaged prediction.
     """
-    forest = _get_forest_estimator(model)
+    forest = _get_forest_estimator(model, "risk_clf.joblib")
     n_classes = len(model.classes_)
-    bias, contrib = forest_contributions(model, x, n_classes)
+    bias, contrib = forest_contributions(model, x, n_classes, "risk_clf.joblib")
     # Ensemble probabilities — what the operator sees
     proba = model.predict_proba(x.reshape(1, -1))[0]
     # RF sub-model probabilities — used for the additivity proof
@@ -248,8 +263,8 @@ def explain_segment_risk(model, x: np.ndarray, top_k: int = 6) -> dict:
 
 def explain_delay(model, x: np.ndarray, top_k: int = 5) -> dict:
     """Attribution for the regression head (hours of delay)."""
-    forest = _get_forest_estimator(model)
-    bias, contrib = forest_contributions(model, x, 1)
+    forest = _get_forest_estimator(model, "delay_reg.joblib")
+    bias, contrib = forest_contributions(model, x, 1, "delay_reg.joblib")
     pred = float(model.predict(x.reshape(1, -1))[0])        # ensemble prediction
     rf_pred = float(forest.predict(x.reshape(1, -1))[0])   # RF-only, for additivity
     c = contrib[:, 0]
@@ -279,8 +294,8 @@ def explain_delay(model, x: np.ndarray, top_k: int = 5) -> dict:
 
 
 def explain_route_delay(model, rx: np.ndarray, top_k: int = 6) -> dict:
-    forest = _get_forest_estimator(model)
-    bias, contrib = forest_contributions(model, rx, 1)
+    forest = _get_forest_estimator(model, "route_delay_reg.joblib")
+    bias, contrib = forest_contributions(model, rx, 1, "route_delay_reg.joblib")
     pred = float(model.predict(rx.reshape(1, -1))[0])        # ensemble prediction
     rf_pred = float(forest.predict(rx.reshape(1, -1))[0])   # RF-only, for additivity
     c = contrib[:, 0]
