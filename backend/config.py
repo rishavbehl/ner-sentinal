@@ -34,6 +34,7 @@ LIVE_WEATHER = _flag("SENTINEL_LIVE_WEATHER", True)
 WEATHER_INTERVAL_MIN = max(5, _int("SENTINEL_WEATHER_INTERVAL", 30))
 LIVE_GPS = _flag("SENTINEL_LIVE_GPS", True)
 SIM_FLEET = _flag("SENTINEL_SIM_FLEET", True)
+MODEL_BACKEND = os.environ.get("SENTINEL_MODEL_BACKEND", "nn").strip().lower()
 
 
 def describe() -> dict:
@@ -42,6 +43,7 @@ def describe() -> dict:
         "weather_interval_minutes": WEATHER_INTERVAL_MIN,
         "live_gps": LIVE_GPS,
         "simulated_fleet": SIM_FLEET,
+        "model_backend": MODEL_BACKEND,
         "note": ("Live weather is OFF by default so the project always runs "
                  "offline. Set SENTINEL_LIVE_WEATHER=1 to pull real data from "
                  "Open-Meteo. GPS tracking is always available — it simply has "

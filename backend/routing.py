@@ -30,14 +30,14 @@ import math
 from collections import Counter, defaultdict
 from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import networkx as nx
 import numpy as np
 
 from . import db, inference
 from .explain import explain_route_delay
-from .features import MONSOON_MONTHS, ROUTE_FEATURE_COLUMNS, route_vector
+from .features import MONSOON_MONTHS, route_vector
 from .geography import NODES, STATES
 
 SUPPLY_HUB = "GUWAHATI"          # NER's de-facto distribution centre

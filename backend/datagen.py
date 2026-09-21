@@ -33,8 +33,8 @@ import numpy as np
 
 from . import db
 from .features import (FEATURE_COLUMNS, MONSOON_MONTHS, ROUTE_FEATURE_COLUMNS,
-                       TERRAIN_ENC, WEATHER_ENC, build_feature_dict)
-from .geography import (CORRIDORS, NODES, Segment, build_segments, district_list)
+                       build_feature_dict)
+from .geography import (NODES, Segment, build_segments, district_list)
 
 RNG = np.random.default_rng(20260911)
 random.seed(20260911)
@@ -173,12 +173,13 @@ def generate_weather(start: datetime, days: int, forecast_hours: int
                 hour_w = {0: 0.85, 3: 0.70, 6: 0.80, 9: 0.95,
                           12: 1.20, 15: 1.30, 18: 1.10, 21: 0.95}[hh]
                 r24_h = round(r24 * hour_w, 2)
+                r72_h = round(max(r72, r24_h), 2)
                 temp = _temp_for(node_id, day.month)
                 wind = round(max(2.0, RNG.gamma(2.0, 4.2) + (r24_h / 12.0)), 1)
                 cond = _condition(r24_h, temp, wind)
                 rows.append((
                     node.name, ts.isoformat(timespec="seconds"),
-                    r24_h, r24_h, round(r72, 2), round(api_series[ds], 2),
+                    r24_h, r24_h, r72_h, round(api_series[ds], 2),
                     cond, temp, wind,
                     1 if ts > start + timedelta(days=days) else 0,
                 ))

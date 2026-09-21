@@ -16,7 +16,6 @@ vehicle reaches the bad segment. Each tick we
 from __future__ import annotations
 
 import asyncio
-import json
 import math
 import random
 import uuid
