@@ -70,15 +70,15 @@ header{grid-area:hdr;background:linear-gradient(180deg,#101a26,#0b121b);
   50%{opacity:.55;box-shadow:0 0 0 5px rgba(45,212,167,0)}}
 
 /* ---------- header quick-action buttons ---------- */
-.hdr-actions{display:flex;gap:6px;flex:0 0 auto;margin-left:auto}
-.hdr-btn{display:flex;align-items:center;gap:6px;
+.hdr-actions{display:flex;gap:6px;flex:0 0 auto}
+.hdr-btn{display:flex;align-items:center;gap:6px;flex:0 0 auto;
   background:var(--panel);border:1px solid var(--line2);border-radius:8px;
   padding:6px 12px;font-size:11.5px;font-weight:600;color:var(--ink2);
   cursor:pointer;transition:all .18s ease;white-space:nowrap}
 .hdr-btn:hover{background:var(--panel2);color:var(--accent);border-color:var(--accent);
   transform:translateY(-1px);box-shadow:0 4px 16px rgba(56,189,248,.15)}
 .hdr-btn:active{transform:translateY(0)}
-.hdr-btn svg{flex:0 0 auto;opacity:.7;transition:opacity .18s}
+.hdr-btn svg{flex:0 0 16px;width:16px;height:16px;opacity:.7;transition:opacity .18s}
 .hdr-btn:hover svg{opacity:1}
 .hdr-btn.gps{border-color:rgba(45,212,167,.3)}
 .hdr-btn.gps:hover{border-color:var(--safe);color:var(--safe);
