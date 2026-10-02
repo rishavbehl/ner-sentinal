@@ -1717,6 +1717,35 @@ $('#map').addEventListener('click', e => {
 });
 window.addEventListener('resize', () => MAP.scalebar());
 
+/* ---------- modal overlay for Field Reporter / GPS Tracker ---------- */
+{
+  const overlay = $('#modalOverlay');
+  const frame   = $('#modalFrame');
+  const title   = $('#modalTitle');
+
+  function openModal(url, label) {
+    title.textContent = label;
+    frame.src = url;
+    overlay.classList.add('open');
+  }
+  function closeModal() {
+    overlay.classList.remove('open');
+    // defer clearing src so the close animation is smooth
+    setTimeout(() => { frame.src = 'about:blank'; }, 260);
+  }
+
+  $('#openFieldReporter').onclick = () => openModal('/field', '📋 Field Incident Reporter');
+  $('#openGPSTracker').onclick    = () => openModal('/track', '📡 Driver GPS Tracker');
+  $('#modalClose').onclick        = closeModal;
+
+  // close on backdrop click (not on the modal container itself)
+  overlay.addEventListener('click', e => { if (e.target === overlay) closeModal(); });
+  // close on Escape
+  document.addEventListener('keydown', e => {
+    if (e.key === 'Escape' && overlay.classList.contains('open')) closeModal();
+  });
+}
+
 boot().catch(e => {
   document.body.innerHTML =
     `<div style="padding:40px;font:14px system-ui;color:#e8eef6">
